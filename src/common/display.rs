@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use colored::*;
 use sysinfo::System;
 
@@ -14,6 +16,31 @@ use crate::{
 
 /// Cells in the RAM and disk usage bars
 const USAGE_BAR_WIDTH: usize = 10;
+
+/// The color of the text before every info line's colon, set once by main before any line is
+/// formatted. Unset or None keeps the plain bold keys
+static KEY_COLOR: OnceLock<Option<Color>> = OnceLock::new();
+
+/// Sets the color of the info lines' keys for this run (see KeyColor::resolve), so it's worked out
+/// once rather than per line. Only the first call counts
+pub fn set_key_color(color: Option<Color>) {
+    let _ = KEY_COLOR.set(color);
+}
+
+/// Formats an info line's key, e.g. "OS:", in this run's key color
+fn format_key(label: &str) -> String {
+    render_key(label, KEY_COLOR.get().copied().flatten())
+}
+
+/// Draws a key, e.g. "OS:": bold, with the text before the colon in the given color while the
+/// colon keeps the default color like the value after it
+pub fn render_key(label: &str, color: Option<Color>) -> String {
+    match color {
+        Some(color) => format!("{}{}", label.color(color).bold(), ":".bold()),
+        // One bold run over the whole key, the exact output from before key colors existed
+        None => format!("{}:", label).bold().to_string(),
+    }
+}
 
 /// Picks the color of a usage percentage (RAM, swap, disk), low is green and high is red
 fn usage_color(percentage: u64) -> PaletteColor {
@@ -68,29 +95,29 @@ fn color_percentage_inverse(percentage: f64) -> ColoredString {
 pub fn display_os() -> String {
     format!(
         "{} {} ({})",
-        "OS:".bold(),
+        format_key("OS"),
         platform::format_os_name(),
         std::env::consts::ARCH // CPU Architecture the program was compiled for
     )
 }
 
 pub fn display_kernel() -> String {
-    format!("{} {}", "Kernel:".bold(), platform::format_kernel_version())
+    format!("{} {}", format_key("Kernel"), platform::format_kernel_version())
 }
 
 /// Formats the shell line, e.g. "Shell: fish 4.9.3", the version is left out when it can't be found
 pub fn display_shell() -> Option<String> {
     let (name, version) = get_shell()?;
     match version {
-        Some(version) => Some(format!("{} {} {}", "Shell:".bold(), name, version)),
-        None => Some(format!("{} {}", "Shell:".bold(), name)),
+        Some(version) => Some(format!("{} {} {}", format_key("Shell"), name, version)),
+        None => Some(format!("{} {}", format_key("Shell"), name)),
     }
 }
 
 /// Formats the CPU line, e.g. "CPU: Apple M5 Pro (6+12) @ 4.61 GHz", the frequency is only shown
 /// when cpu_frequency is on
 pub fn display_cpu(sys: &System, config: &Config) -> String {
-    let mut line = format!("{} {}", "CPU:".bold(), get_cpu_name(sys));
+    let mut line = format!("{} {}", format_key("CPU"), get_cpu_name(sys));
 
     if let Some(cores) = get_cpu_core_counts().and_then(|counts| format_cpu_cores(&counts)) {
         line.push_str(&format!(" ({})", cores));
@@ -108,20 +135,26 @@ pub fn display_cpu(sys: &System, config: &Config) -> String {
 /// Formats the RAM line, e.g. "RAM: 41.41 GB / 64 GB ██████▍░░░ 64%"
 pub fn display_ram_usage(sys: &System, config: &Config) -> String {
     let (total, used, percentage) = get_ram_usage(sys);
-    format!("{} {} / {} {}", "RAM:".bold(), used, total, format_usage(percentage, config))
+    format!(
+        "{} {} / {} {}",
+        format_key("RAM"),
+        used,
+        total,
+        format_usage(percentage, config)
+    )
 }
 
 pub fn display_swap_usage(sys: &System) -> String {
     let (total, used, percentage) = get_swap_usage(sys);
     if extract_numeric_value(&total).is_ok_and(|v| v == 0.0) {
-        format!("{} Disabled", "Swap:".bold())
+        format!("{} Disabled", format_key("Swap"))
     } else {
-        format!("{} {} / {} ({})", "Swap:".bold(), used, total, color_percentage(percentage))
+        format!("{} {} / {} ({})", format_key("Swap"), used, total, color_percentage(percentage))
     }
 }
 
 pub fn display_uptime() -> String {
-    format!("{} {}", "Uptime:".bold(), get_uptime())
+    format!("{} {}", format_key("Uptime"), get_uptime())
 }
 
 /// Formats the battery line, e.g. "Battery: 80% (Discharging)". While plugged in the brackets name
@@ -136,7 +169,7 @@ pub fn display_battery(config: &Config) -> Option<String> {
     let adapter = config.display.ac_adapter.then(platform::get_ac_adapter).flatten();
     Some(format!(
         "{} {} ({})",
-        "Battery:".bold(),
+        format_key("Battery"),
         color_percentage_inverse(capacity.parse::<f64>().unwrap_or(0.0)),
         format_battery_status(&status, adapter.as_deref())
     ))
@@ -145,7 +178,7 @@ pub fn display_battery(config: &Config) -> Option<String> {
 pub fn display_power_draw() -> Option<String> {
     let power_draw = get_power_draw();
     if power_draw != 0 {
-        Some(format!("{} {}W", "Power Draw:".bold(), power_draw))
+        Some(format!("{} {}W", format_key("Power Draw"), power_draw))
     } else {
         None
     }
@@ -154,7 +187,7 @@ pub fn display_power_draw() -> Option<String> {
 /// Formats the local IPv4 line, e.g. "Local IPv4 (en0): 192.168.1.20/24"
 pub fn display_local_ipv4() -> Option<String> {
     get_local_ipv4().map(|(interface, address)| {
-        format!("{} {}", format!("Local IPv4 ({}):", interface).bold(), address)
+        format!("{} {}", format_key(&format!("Local IPv4 ({})", interface)), address)
     })
 }
 
@@ -162,20 +195,20 @@ pub fn display_local_ipv4() -> Option<String> {
 /// interface has no global IPv6 address
 pub fn display_local_ipv6() -> Option<String> {
     get_local_ipv6().map(|(interface, address)| {
-        format!("{} {}", format!("Local IPv6 ({}):", interface).bold(), address)
+        format!("{} {}", format_key(&format!("Local IPv6 ({})", interface)), address)
     })
 }
 
 /// Formats the Wi-Fi line, e.g. "Wi-Fi: SeenHealth IT", None when not connected to Wi-Fi (and on
 /// Linux, where it isn't read yet)
 pub fn display_wifi() -> Option<String> {
-    get_wifi_ssid().map(|ssid| format!("{} {}", "Wi-Fi:".bold(), ssid))
+    get_wifi_ssid().map(|ssid| format!("{} {}", format_key("Wi-Fi"), ssid))
 }
 
 /// Formats the Tailscale IP line, e.g. "Tailscale IP: 100.81.138.51", None when Tailscale is not
 /// connected
 pub fn display_tailscale_ip() -> Option<String> {
-    get_tailscale_ipv4().map(|address| format!("{} {}", "Tailscale IP:".bold(), address))
+    get_tailscale_ipv4().map(|address| format!("{} {}", format_key("Tailscale IP"), address))
 }
 
 /// Formats the Tailscale name line, e.g. "Tailscale Name: laptop" for the MagicDNS name
@@ -183,7 +216,7 @@ pub fn display_tailscale_ip() -> Option<String> {
 pub fn display_tailscale_name() -> Option<String> {
     let host = get_tailscale_host(get_tailscale_ipv4()?)?;
     let name = get_tailscale_machine_name(&host)?;
-    Some(format!("{} {}", "Tailscale Name:".bold(), name))
+    Some(format!("{} {}", format_key("Tailscale Name"), name))
 }
 
 /// Formats the disk line, e.g. "Disk (/): 900GB / 994GB █████████░ 90%"
@@ -191,7 +224,7 @@ pub fn display_disk_usage(config: &Config) -> String {
     let (total, used, percentage) = platform::get_disk_usage();
     format!(
         "{} {}GB / {}GB {}",
-        "Disk (/):".bold(), // FIXME: Shows "/" dir statically
+        format_key("Disk (/)"), // FIXME: Shows "/" dir statically
         used,
         total,
         format_usage(percentage, config)
@@ -199,7 +232,7 @@ pub fn display_disk_usage(config: &Config) -> String {
 }
 
 pub fn display_gpu_name(cli: &Cli) -> Option<String> {
-    platform::get_gpu_name(cli).map(|gpu_name| format!("{} {}", "GPU:".bold(), gpu_name))
+    platform::get_gpu_name(cli).map(|gpu_name| format!("{} {}", format_key("GPU"), gpu_name))
 }
 
 /// Formats one Screen line per display, e.g. "Screen (Color LCD): 3456x2234 @ 120Hz". With a
@@ -219,9 +252,9 @@ pub fn display_screens(config: &Config) -> Vec<String> {
             let resolution = config.display.resolution.then_some((screen.width, screen.height));
             let refresh_rate = screen.refresh_rate.filter(|_| config.display.refresh_rate);
             let value = format_screen(resolution, refresh_rate)?;
-            let key = format!("{}:", format_screen_key(&screen.name, index, count));
+            let key = format_key(&format_screen_key(&screen.name, index, count));
 
-            Some(format!("{} {}", key.bold(), value))
+            Some(format!("{} {}", key, value))
         })
         .collect()
 }

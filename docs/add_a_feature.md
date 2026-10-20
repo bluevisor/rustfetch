@@ -22,6 +22,8 @@ These go into ```src/platform/OS_NAME.rs```
 
 - **Other** -> **If what you're trying to implement isn't listed here**, search for the specific crate you're going to use (if any) and **follow existing patterns**. In your PR description, include why you thought this didn't match any other known pattern listed above
 
+The module's line goes in ```src/common/display.rs```, with the key (the text before the colon) formatted by ```format_key()``` so it is bold and takes the key color like every other line.
+
 Every module is part of the ```config.toml``` file, so learn [how to add a config option](#adding-config-related-features).
 
 Always remember to read and apply the [tests](#tests) section.

@@ -36,7 +36,8 @@ fn test_old_config_gets_new_lines() {
         && display.show_tailscale_name()
         && display.usage_bars
         && display.ac_adapter
-        && display.wifi));
+        && display.wifi
+        && display.key_color == "auto"));
 }
 
 #[test]
@@ -73,6 +74,62 @@ fn test_old_config_keeps_logo_color() {
 }
 
 #[test]
+fn test_old_config_gets_auto_key_color() {
+    // A file written before key_color existed follows the logo and keeps its [logo] color
+    for logo in ["rainbow", "#ff8800"] {
+        let content = format!("{}\n[logo]\ncolor = \"{}\"\n", OLD_DISPLAY_SECTION, logo);
+        let config: Option<Config> = toml::from_str(&content).ok();
+        let key_color = config.as_ref().map(|config| config.display.key_color.as_str());
+        assert_eq!(key_color, Some("auto"), "{}", logo);
+        assert_eq!(config.map(|config| config.logo.color), Some(String::from(logo)));
+    }
+}
+
+#[test]
+fn test_key_color_is_read() {
+    let keys = "key_color = \"none\"\n\n[logo]\ncolor = \"red\"\n";
+    let content = format!("{}{}", OLD_DISPLAY_SECTION, keys);
+    let config: Option<Config> = toml::from_str(&content).ok();
+    let key_color = config.as_ref().map(|config| config.display.key_color.as_str());
+    assert_eq!(key_color, Some("none"));
+    assert_eq!(config.map(|config| config.logo.color), Some(String::from("red")));
+}
+
+#[test]
+fn test_key_color_that_isnt_text_keeps_the_rest() -> Result<(), Box<dyn std::error::Error>> {
+    // key_color is the only text key in [display], a bool or a number there mustn't reset every
+    // toggle and the [logo] color: false turns the colors off, anything else follows the logo
+    let without_swap = OLD_DISPLAY_SECTION.replace("swap = true", "swap = false");
+    for (value, expected) in [("false", "none"), ("true", "auto"), ("5", "auto")] {
+        let style = format!("usage_bars = false\nkey_color = {}\n", value);
+        let content = format!("{}{}\n[logo]\ncolor = \"rainbow\"\n", without_swap, style);
+        let config: Option<Config> = toml::from_str(&content).ok();
+        assert!(config.as_ref().is_some_and(|config| !config.display.swap), "{}", value);
+        let key_color = config.as_ref().map(|config| config.display.key_color.as_str());
+        assert_eq!(key_color, Some(expected), "{}", value);
+        assert_eq!(config.map(|config| config.logo.color), Some(String::from("rainbow")));
+
+        // --all reads the same keys through its own struct
+        let name = format!("rustfetch-key-{}-{}.toml", value, std::process::id());
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, &content)?;
+        let cli = Cli {
+            all: true,
+            reset_config: false,
+            padding: 1,
+            config_file: Some(path.clone()),
+            clear_cache: false,
+        };
+        let config = load_all_config(&cli);
+        std::fs::remove_file(&path)?;
+        assert_eq!(config.display.key_color, expected, "{}", value);
+        assert!(!config.display.usage_bars, "{}", value);
+        assert_eq!(config.logo.color, "rainbow");
+    }
+    Ok(())
+}
+
+#[test]
 fn test_partial_logo_table_keeps_display() {
     // An empty [logo] table, or a misspelled key in it, only resets the logo color: the [display]
     // toggles still apply instead of the whole file falling back to the defaults
@@ -105,9 +162,11 @@ fn test_new_toggles_can_be_turned_off() {
 
 #[test]
 fn test_all_keeps_usage_bar_style() -> Result<(), Box<dyn std::error::Error>> {
-    // --all turns every line on but keeps how lines look: usage_bars, like the [logo] color
+    // --all turns every line on but keeps how lines look: usage_bars and key_color, like the [logo]
+    // color
     let path = std::env::temp_dir().join(format!("rustfetch-all-{}.toml", std::process::id()));
-    let content = format!("{}usage_bars = false\n\n[logo]\ncolor = \"red\"\n", OLD_DISPLAY_SECTION);
+    let style = "usage_bars = false\nkey_color = \"#00ff00\"\n";
+    let content = format!("{}{}\n[logo]\ncolor = \"red\"\n", OLD_DISPLAY_SECTION, style);
     std::fs::write(&path, content)?;
     let cli = Cli {
         all: true,
@@ -121,6 +180,7 @@ fn test_all_keeps_usage_bar_style() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(!config.display.usage_bars && config.display.kernel && config.display.ac_adapter);
     assert!(config.display.wifi);
+    assert_eq!(config.display.key_color, "#00ff00");
     assert_eq!(config.logo.color, "red");
     Ok(())
 }
@@ -136,4 +196,5 @@ fn test_all_defaults_usage_bars_without_file() {
     };
     let config = load_all_config(&cli);
     assert!(config.display.usage_bars && config.display.show_tailscale_name());
+    assert_eq!(config.display.key_color, "auto");
 }

@@ -31,7 +31,7 @@ src/
 tests/              # Tests for "cargo test"
 ├── <a href="#utils_testsrs">utils_tests.rs</a>  # Tests specific to utils
 ├── config_tests.rs  # Old config files still parse
-├── logo_tests.rs    # [logo] color parsing
+├── logo_tests.rs    # [logo] and key_color parsing, the auto key color, render_key()
 ├── palette_tests.rs # Palette, usage bar track color, truecolor detection, logo shape
 ├── shell_tests.rs   # Shell name/version parsing and the version cache
 ├── network_tests.rs # Interface and address selection, /proc/net parsers
@@ -53,9 +53,10 @@ Entry point for the program, **handles showing or not showing modules** based on
 
 - **Gets command line arguments** through [clap](https://docs.rs/clap/latest/clap/)
 - **Creates a System variable** used for sysinfo functions
--  If the "--all" or "-a" flag is given, **enables all modules** and only reads the `[logo]` table and `usage_bars` of the config file (how lines look, not which ones show), without creating it (This does not skip unsupported [platform specific modules](#platform)).
+-  If the "--all" or "-a" flag is given, **enables all modules** and only reads the `[logo]` table, `usage_bars` and `key_color` of the config file (how lines look, not which ones show), without creating it (This does not skip unsupported [platform specific modules](#platform)).
 <br>Else, **gets config options** from [config.rs](#configrs) and shows them based on their boolean value.
 - Gets the distro id from the dedicated function inside the **platform** crate
+- Works out the **key color** (the text before each line's colon) once, from `key_color` and the logo about to be drawn (see [logo.rs](#logors)), and hands it to [display.rs](#displayrs) before any line is formatted
 - Creates a **String vector** and adds the return values of the [display functions](#displayrs) to it if the config boolean for it is true and if the function returns Some(), if it returns None or the config for it is false it **just skips it**.
 - Prints the info_lines vector alongside the logo's lines and **adds padding** to make all the lines be horizontally aligned. As the line get printed, they are colored according to the distro_id
 
@@ -65,8 +66,8 @@ Main file for configuration handling, **creates and parses a config file** or en
 - Creates a **DisplayConfig** struct that includes all modules as boolean values
 - **Creates two implementations** for DisplayConfig: **Default** for initial file creation and **All** where all modules are set to true
 - **load_config()** -> returns a DisplayConfig struct from parsing the **config.toml**. If the file does not exist it will create it in the [default config directory](https://docs.rs/dirs/latest/dirs/fn.config_dir.html) and print a message.
-- **load_all_config()** -> turns every module on and keeps the `[logo]` settings and `usage_bars`, read without creating the file or printing anything.
-- Lines added after the config format was released (shell, usage_bars, ipv4, ipv6, wifi, tailscale_ip, tailscale_name, ac_adapter) and the whole `[logo]` table are **defaulted**, so older config files still parse.
+- **load_all_config()** -> turns every module on and keeps the `[logo]` settings, `usage_bars` and `key_color`, read without creating the file or printing anything.
+- Lines added after the config format was released (shell, usage_bars, ipv4, ipv6, wifi, tailscale_ip, tailscale_name, ac_adapter), `key_color` (`"auto"`) and the whole `[logo]` table are **defaulted**, so older config files still parse.
 - `ac_adapter` doesn't add a line of its own: it names the power adapter inside the Battery line's brackets (see [display.rs](#displayrs)), so with `battery = false` there is no adapter either.
 - Renamed keys keep reading their **old name**: `tailscale_name` was `tailscale_host`, so a config that still says `tailscale_host = false` keeps the line hidden. The old key is its own `Option` field rather than a serde alias, since an alias fails with "duplicate field" (and resets every setting) on a file that has both; `show_tailscale_name()` lets the new key win.
 
@@ -79,7 +80,7 @@ Example of a standard flag:
 ## display.rs
 Contains all functions related to showing the values returned from other files as formatted text.
 
-Also contains internal private functions such as **color_percentage()** and **format_usage()**, specific to display features. The RAM and disk lines end in a 10 cell **usage bar** (`██████▍░░░ 64%`): the bar itself is drawn by the pure `render_bar()` in [utils.rs](#utilsrs), filled with the percentage's palette color over a dim gray track. `usage_bars = false` brings back the plain `(64%)`. Without colors (`NO_COLOR`, a pipe) the bar glyphs are still printed, uncolored.
+Also contains internal private functions such as **color_percentage()** and **format_usage()**, specific to display features. Every line's key goes through **format_key()**: bold, with the text before the colon (`OS`, `Disk (/)`, `Screen (Liquid Retina XDR)`) in the key color that main sets once with `set_key_color()` (a `OnceLock`, so it isn't worked out per line), while the colon and the value keep their own colors. The drawing itself is the pure `render_key()`, tested on its own. Without a key color it is the plain bold `OS:` from before. The title line and its dashes are left alone. The logo column is padded from the logo's uncolored width and each info line is written after that padding, so the key's escape codes never affect alignment. The RAM and disk lines end in a 10 cell **usage bar** (`██████▍░░░ 64%`): the bar itself is drawn by the pure `render_bar()` in [utils.rs](#utilsrs), filled with the percentage's palette color over a dim gray track. `usage_bars = false` brings back the plain `(64%)`. Without colors (`NO_COLOR`, a pipe) the bar glyphs are still printed, uncolored.
 
 The Battery line's brackets come from the pure `format_battery_status()`: while an adapter is plugged in it follows the status (`Charging, 140W USB-C Power Adapter`, `Full, 140W ...`), and it replaces the plain `AC Connected`, which only says that one is plugged in. On battery, or when the adapter can't be named (Linux, `ac_adapter = false`), the status word is left as it is.
 
@@ -87,10 +88,10 @@ The Battery line's brackets come from the pure `format_battery_status()`: while 
 Contains **general purpose functions** shared across multiple files, including the pure formatting helpers of the display lines (`format_screen()`, `render_bar()`...). These must undergo the highest level of [testing](#utils_testsrs) as they're used everywhere.
 
 ## logo.rs
-Loads the ASCII logos from `ascii/`, colors them (the distro's own color, the rainbow Apple stripes or a solid `[logo]` color) and prints them next to the info lines. Widths are counted in **terminal columns** (`chars().count()`), not bytes, since block elements such as `█` are 3 bytes but one column.
+Loads the ASCII logos from `ascii/`, colors them (the distro's own color, the rainbow Apple stripes or a solid `[logo]` color) and prints them next to the info lines. The distro colors live in `distro_logo_color()`, shared by the logo lines and the **"auto" key color**: `auto_key_color()` maps the id of the logo being drawn (main passes the same `logo_id` to it and to `print_logo()`, the distro's own logo for now) to its keys' color in one match: a solid `[logo]` color when one is set, yellow next to the Apple logo whether white or rainbow (fastfetch's macOS key color, Apple's `#fdb827` stripe on truecolor terminals and ANSI yellow elsewhere) and the distro's own color otherwise, with plain bold keys when there's neither a logo nor a solid color. Giving another logo its own key color is one more arm there; a logo id `distro_logo_color()` doesn't know gets white. `key_color` and the `[logo]` color are parsed by the same colored parser (color names, `#rrggbb`), behind a check that turns non-ASCII away before colored's hex parser slices it by byte; an invalid `key_color` falls back to auto. In the config file `key_color = false` reads as `"none"` and any other value that isn't a string as `"auto"`, so a wrong type there doesn't reset the whole file. Widths are counted in **terminal columns** (`chars().count()`), not bytes, since block elements such as `█` are 3 bytes but one column.
 
 ## palette.rs
-The six accent colors used by the rainbow logo and the usage percentages and bars, in **one place**: a muted 24-bit palette when `COLORTERM` is `truecolor` or `24bit` (the same rule the colored crate uses) and the plain ANSI colors everywhere else. Detection is read once per process. The empty track of the usage bars is a dim gray (`#4a4a4a`, bright black on ANSI terminals).
+The six accent colors used by the rainbow logo, the macOS key color and the usage percentages and bars, in **one place**: a muted 24-bit palette when `COLORTERM` is `truecolor` or `24bit` (the same rule the colored crate uses) and the plain ANSI colors everywhere else. Detection is read once per process. The empty track of the usage bars is a dim gray (`#4a4a4a`, bright black on ANSI terminals).
 
 ## cache.rs
 Caches the GPU's pretty name, which on **Linux** comes from wgpu and takes ~45ms. Compiled only on Linux: macOS reads its GPU from IOKit in well under a millisecond, so wgpu isn't even a dependency there.

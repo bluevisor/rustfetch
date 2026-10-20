@@ -11,7 +11,7 @@ use clap::Parser;
 
 use crate::{
     cli::Cli,
-    common::{get_logo_lines, parse_logo_color, print_logo},
+    common::{get_logo_lines, parse_key_color, parse_logo_color, print_logo},
     config::{load_all_config, load_config},
 };
 
@@ -34,6 +34,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let distro_id = platform::get_distro_id();
+    // The logo drawn is the distro's own, the same id picks the "auto" key color
+    let logo_id = distro_id.as_str();
+    let logo_color = parse_logo_color(&config.logo.color);
+    // Every key shares one color, worked out from the logo before the first line is formatted
+    let key_color = parse_key_color(&config.display.key_color).resolve(logo_id, logo_color);
+    common::set_key_color(key_color);
 
     // Roughly fastfetch's order (system, shell, displays, hardware, network, then power), with Swap
     // after Disk rather than RAM and the power adapter inside the Battery line
@@ -78,11 +84,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .collect();
 
-    let logo_lines = get_logo_lines(&distro_id);
+    let logo_lines = get_logo_lines(logo_id);
 
-    let logo_color = parse_logo_color(&config.logo.color);
-
-    print_logo(logo_lines, info_lines, &distro_id, logo_color, &cli)?;
+    print_logo(logo_lines, info_lines, logo_id, logo_color, &cli)?;
 
     Ok(())
 }

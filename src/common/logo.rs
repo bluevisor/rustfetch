@@ -6,13 +6,13 @@ use colored::*;
 
 use crate::{
     cli::Cli,
-    common::{PaletteColor, paint_vivid},
+    common::{PaletteColor, paint_vivid, supports_truecolor},
 };
 
-/// Gets the lines logos in a vector and returns them
-pub fn get_logo_lines(distro_id: &str) -> Vec<String> {
+/// Gets a distro's ASCII logo, empty for distros without one
+fn get_logo(distro_id: &str) -> &'static str {
     // include_str!() works even in compiled binaries
-    let logo = match distro_id {
+    match distro_id {
         "arch" => include_str!("../../ascii/arch.txt"),
         "ubuntu" => include_str!("../../ascii/ubuntu.txt"),
         "fedora" => include_str!("../../ascii/fedora.txt"),
@@ -32,36 +32,46 @@ pub fn get_logo_lines(distro_id: &str) -> Vec<String> {
         "elementary" => include_str!("../../ascii/elementary.txt"),
         "nixos" => include_str!("../../ascii/nixos.txt"),
         _ => "",
-    };
+    }
+}
 
-    logo.lines().map(|l| l.to_string()).collect()
+/// Gets the lines logos in a vector and returns them
+pub fn get_logo_lines(distro_id: &str) -> Vec<String> {
+    get_logo(distro_id).lines().map(|l| l.to_string()).collect()
+}
+
+/// Gets the color a distro's logo is drawn in by default, shared by its logo lines and its "auto"
+/// key color
+fn distro_logo_color(distro_id: &str) -> Color {
+    let rgb = |r, g, b| Color::TrueColor { r, g, b };
+    match distro_id {
+        // The exact colors should be tested on your distro and eventually changed it they do not
+        // match the color of the distro's logo excessively
+        "arch" => rgb(23, 147, 209),
+        "ubuntu" => rgb(255, 156, 0),
+        "cachyos" => rgb(0, 184, 148),
+        "fedora" => rgb(11, 87, 164),
+        "garuda" => rgb(138, 43, 226),
+        "gentoo" => rgb(84, 73, 149),
+        "endeavouros" => rgb(122, 58, 237),
+        "kali" => rgb(38, 139, 210),
+        "linuxmint" | "manjaro" => Color::Green,
+        "debian" => Color::Red,
+        "alpine" => Color::Cyan,
+        "popos" => rgb(72, 149, 239),
+        "opensuse" => rgb(115, 186, 37),
+        "nixos" => rgb(125, 176, 221),
+        "zorin" => rgb(17, 162, 236),
+        "elementary" => Color::White,
+        _ => Color::White, // this includes macos
+    }
 }
 
 /// Getting a reference to an element of the vector of strings we're printing and matching it with
 /// the distro id, we get return its colorized version.
-/// Example: if distro_id = ubuntu, then we return line.orange()
+/// Example: if distro_id = ubuntu, then we return the line in orange
 pub fn colorize_logo_line(distro_id: &str, line: &str) -> ColoredString {
-    match distro_id {
-        // The exact colors should be tested on your distro and eventually changed it they do not
-        // match the color of the distro's logo excessively
-        "arch" => line.truecolor(23, 147, 209),
-        "ubuntu" => line.truecolor(255, 156, 0),
-        "cachyos" => line.truecolor(0, 184, 148),
-        "fedora" => line.truecolor(11, 87, 164),
-        "garuda" => line.truecolor(138, 43, 226),
-        "gentoo" => line.truecolor(84, 73, 149),
-        "endeavouros" => line.truecolor(122, 58, 237),
-        "kali" => line.truecolor(38, 139, 210),
-        "linuxmint" | "manjaro" => line.green(),
-        "debian" => line.red(),
-        "alpine" => line.cyan(),
-        "popos" => line.truecolor(72, 149, 239),
-        "opensuse" => line.truecolor(115, 186, 37),
-        "nixos" => line.truecolor(125, 176, 221),
-        "zorin" => line.truecolor(17, 162, 236),
-        "elementary" => line.white(),
-        _ => line.white(), // this includes macos
-    }
+    line.color(distro_logo_color(distro_id))
 }
 
 /// The classic rainbow Apple stripes over the 19 line macOS logo. Green covers the leaf and the
@@ -97,6 +107,15 @@ pub enum LogoColor {
     Solid(Color),
 }
 
+/// Parses a color name ("white", "bright white") or a hex code ("#ff8800"), None for anything else
+fn parse_color(value: &str) -> Option<Color> {
+    // Non-ASCII is never a valid color, and colored's hex parser slices by byte index (would panic)
+    if !value.is_ascii() {
+        return None;
+    }
+    value.parse().ok()
+}
+
 /// Parses the [logo] color from the config file: "default", "rainbow", a color name ("white",
 /// "bright white") or a hex code ("#ff8800"). Anything else falls back to the default colors
 pub fn parse_logo_color(value: &str) -> LogoColor {
@@ -104,11 +123,59 @@ pub fn parse_logo_color(value: &str) -> LogoColor {
     if value.eq_ignore_ascii_case("rainbow") {
         return LogoColor::Rainbow;
     }
-    // Non-ASCII is never a valid color, and colored's hex parser slices by byte index (would panic)
-    if !value.is_ascii() {
-        return LogoColor::Default;
+    parse_color(value).map(LogoColor::Solid).unwrap_or(LogoColor::Default)
+}
+
+/// How the text before each info line's colon is colored, set by key_color in the [display]
+/// section of the config file
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KeyColor {
+    /// Follows the logo being drawn, see auto_key_color
+    Auto,
+    /// Plain bold keys ("none")
+    Plain,
+    /// Every key in one color
+    Solid(Color),
+}
+
+impl KeyColor {
+    /// Gets the color the keys are drawn in next to the logo with this id (the one print_logo
+    /// draws), None for plain bold keys
+    pub fn resolve(self, logo_id: &str, logo_color: LogoColor) -> Option<Color> {
+        match self {
+            KeyColor::Auto => auto_key_color(logo_id, logo_color, supports_truecolor()),
+            KeyColor::Plain => None,
+            KeyColor::Solid(color) => Some(color),
+        }
     }
-    value.parse().map(LogoColor::Solid).unwrap_or(LogoColor::Default)
+}
+
+/// Parses key_color from the config file: "auto", "none", a color name ("yellow", "bright blue")
+/// or a hex code ("#fdb827"). Anything else falls back to auto
+pub fn parse_key_color(value: &str) -> KeyColor {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return KeyColor::Plain;
+    }
+    // "auto" isn't a color name either, so it lands on the fallback
+    parse_color(value).map(KeyColor::Solid).unwrap_or(KeyColor::Auto)
+}
+
+/// Picks the "auto" key color from the id of the logo being drawn (the distro's own logo for
+/// now): a solid [logo] color when one is set, yellow next to the Apple logo (fastfetch's macOS
+/// key color) and the logo's own color everywhere else. None when there's neither a logo nor a
+/// solid color to follow. A new logo whose keys shouldn't take distro_logo_color (white for any
+/// id it doesn't know) gets one more arm here
+pub fn auto_key_color(logo_id: &str, logo_color: LogoColor, truecolor: bool) -> Option<Color> {
+    match (logo_id, logo_color) {
+        // The color picked for the logo, even when there's no logo to draw it on
+        (_, LogoColor::Solid(color)) => Some(color),
+        // White or rainbow, the Apple logo's keys take its yellow stripe (ANSI yellow without
+        // 24-bit color)
+        ("macos", _) => Some(PaletteColor::Yellow.resolve_vivid(truecolor)),
+        _ if get_logo(logo_id).is_empty() => None,
+        _ => Some(distro_logo_color(logo_id)),
+    }
 }
 
 pub fn print_logo(

@@ -4,7 +4,8 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize}; // This transforms toml files into structs and viceversa
+// This transforms toml files into structs and viceversa
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::cli::Cli;
 
@@ -53,6 +54,10 @@ pub struct DisplayConfig {
     // Draws a bar next to the RAM and disk percentages
     #[serde(default = "default_true")]
     pub usage_bars: bool,
+    // Color of the text before each line's colon: "auto" (follows the logo), "none", a color name
+    // or a hex code, see parse_key_color. The only text key here, so it's read leniently
+    #[serde(default = "default_key_color", deserialize_with = "deserialize_key_color")]
+    pub key_color: String,
     #[serde(default = "default_true")]
     pub ipv4: bool,
     #[serde(default = "default_true")]
@@ -94,6 +99,7 @@ impl Default for DisplayConfig {
             swap: true,
             disk: true,
             usage_bars: true,
+            key_color: default_key_color(),
             ipv4: true,
             ipv6: true,
             wifi: true,
@@ -118,6 +124,24 @@ impl DisplayConfig {
 /// serde default for display toggles added after the config file format was released
 fn default_true() -> bool {
     true
+}
+
+/// serde default for key_color, which follows the logo
+fn default_key_color() -> String {
+    String::from("auto")
+}
+
+/// serde reader for key_color: `false` turns the colors off like "none" and any other value that
+/// isn't a string follows the logo, instead of an error that would reset the whole config file
+fn deserialize_key_color<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(match toml::Value::deserialize(deserializer)? {
+        toml::Value::String(value) => value,
+        toml::Value::Boolean(false) => String::from("none"),
+        _ => default_key_color(),
+    })
 }
 
 fn get_config_template() -> String {
@@ -164,6 +188,14 @@ disk = true
 # ----------
 # Draw a bar before the RAM and disk percentages, false shows just "(64%)". --all keeps it too
 usage_bars = true
+
+# KEY COLOR
+# ---------
+# Color of the text before each line's colon ("OS", "Disk (/)"). "auto" follows the logo: the
+# [logo] color when it is a solid one, otherwise yellow next to the Apple logo (like fastfetch)
+# and the distro's own color on Linux. "none" (or false) keeps plain bold keys, anything else is
+# a name (red, bright blue, ...) or a hex code such as "#ff8800". --all keeps it too
+key_color = "auto"
 
 # NETWORK INFO
 # ------------
@@ -269,11 +301,13 @@ struct StyleOnlyConfig {
 #[serde(default)]
 struct DisplayStyleConfig {
     usage_bars: bool,
+    #[serde(deserialize_with = "deserialize_key_color")]
+    key_color: String,
 }
 
 impl Default for DisplayStyleConfig {
     fn default() -> Self {
-        Self { usage_bars: true }
+        Self { usage_bars: true, key_color: default_key_color() }
     }
 }
 
@@ -287,8 +321,8 @@ fn load_style_config(cli: &Cli) -> StyleOnlyConfig {
         .unwrap_or_default()
 }
 
-/// Enables every module but keeps the user's [logo] settings and usage bar style from the config
-/// file
+/// Enables every module but keeps the user's [logo] settings, usage bar style and key color from
+/// the config file
 pub fn load_all_config(cli: &Cli) -> Config {
     let style = load_style_config(cli);
     Config {
@@ -309,6 +343,7 @@ pub fn load_all_config(cli: &Cli) -> Config {
             swap: true,
             disk: true,
             usage_bars: style.display.usage_bars,
+            key_color: style.display.key_color,
             ipv4: true,
             ipv6: true,
             wifi: true,
