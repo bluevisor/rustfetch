@@ -1,6 +1,10 @@
 //! Common functions shared across all platforms
 
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File},
+    os::unix::fs::FileExt,
+    path::Path,
+};
 
 const KIB_IN_MB: f64 = 1024.0;
 const KIB_IN_GB: f64 = 1024.0 * 1024.0; // We are declaring it as f64 as we'll use it as a float in this file to minimize casting
@@ -79,4 +83,77 @@ pub fn extract_numeric_value(input: &str) -> Result<f64, String> {
 /// normalizes hex codes to remove the x, for example "0xf89" becomes "0f89"
 pub fn format_hex(id: &str) -> String {
     id.trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase()
+}
+
+/// Reads N bytes at offset as an array, to decode binary headers with from_le_bytes/from_be_bytes
+pub fn read_array<const N: usize>(data: &[u8], offset: usize) -> Option<[u8; N]> {
+    data.get(offset .. offset.checked_add(N)?)?.try_into().ok()
+}
+
+/// Reads up to length bytes of a file starting at offset, fewer if the file ends first
+pub fn read_file_at(file: &File, offset: u64, length: usize) -> Option<Vec<u8>> {
+    let mut buffer = vec![0u8; length];
+    let mut filled = 0;
+    while filled < length {
+        match file.read_at(buffer.get_mut(filled ..)?, offset + filled as u64) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(_) => return None,
+        }
+    }
+    buffer.truncate(filled);
+    Some(buffer)
+}
+
+/// Formats CPU core counts as "P+E" for hybrid CPUs or a plain count otherwise. Returns None if
+/// there is nothing to show
+///
+/// For example: [6, 12] returns "6+12" and [8] returns "8"
+pub fn format_cpu_cores(core_counts: &[usize]) -> Option<String> {
+    // A 0 means that core type could not be read, showing "6+0" would be wrong
+    if core_counts.is_empty() || core_counts.contains(&0) {
+        return None;
+    }
+
+    Some(core_counts.iter().map(|count| count.to_string()).collect::<Vec<_>>().join("+"))
+}
+
+/// Formats a frequency given in MHz, GHz is rounded to two decimals like fastfetch does. Returns
+/// None for 0 since that means the frequency could not be read
+///
+/// For example: 4608 returns "4.61 GHz" and 800 returns "800 MHz"
+pub fn format_frequency(frequency_mhz: u64) -> Option<String> {
+    match frequency_mhz {
+        0 => None,
+        1 .. 1000 => Some(format!("{} MHz", frequency_mhz)),
+        _ => Some(format!("{:.2} GHz", frequency_mhz as f64 / 1000.0)),
+    }
+}
+
+/// Builds the key of a Screen line, the display name is only added when there is more than one
+/// display so single-monitor setups keep the plain "Screen" key
+///
+/// For example: ("Color LCD", 0, 2) returns "Screen (Color LCD)"
+pub fn format_screen_key(name: &str, index: usize, count: usize) -> String {
+    if count <= 1 {
+        String::from("Screen")
+    } else if name.is_empty() {
+        // Unnamed displays still need telling apart
+        format!("Screen {}", index + 1)
+    } else {
+        format!("Screen ({})", name)
+    }
+}
+
+/// Formats a display's resolution and refresh rate, either can be left out. Returns None if both
+/// are
+///
+/// For example: (Some((3456, 2234)), Some(120)) returns "3456x2234 @ 120Hz"
+pub fn format_screen(resolution: Option<(u64, u64)>, refresh_rate: Option<u64>) -> Option<String> {
+    match (resolution, refresh_rate) {
+        (Some((width, height)), Some(rate)) => Some(format!("{}x{} @ {}Hz", width, height, rate)),
+        (Some((width, height)), None) => Some(format!("{}x{}", width, height)),
+        (None, Some(rate)) => Some(format!("{}Hz", rate)),
+        (None, None) => None,
+    }
 }

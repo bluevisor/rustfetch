@@ -4,7 +4,10 @@ use std::io::{BufWriter, Write};
 
 use colored::*;
 
-use crate::cli::Cli;
+use crate::{
+    cli::Cli,
+    common::{PaletteColor, paint},
+};
 
 /// Gets the lines logos in a vector and returns them
 pub fn get_logo_lines(distro_id: &str) -> Vec<String> {
@@ -61,10 +64,58 @@ pub fn colorize_logo_line(distro_id: &str, line: &str) -> ColoredString {
     }
 }
 
+/// The classic rainbow Apple stripes over the 19 line macOS logo. Green covers the leaf and the
+/// top of the apple, every other stripe is two rows so the stripes across the body look even (the
+/// last blue row is only the half-height bottom edge)
+fn colorize_macos_logo_line(line: &str, line_index: usize) -> ColoredString {
+    let color = match line_index {
+        0 ..= 7 => PaletteColor::Green, // leaf and top of the apple
+        8 | 9 => PaletteColor::Yellow,
+        10 | 11 => PaletteColor::Orange,
+        12 | 13 => PaletteColor::Red,
+        14 | 15 => PaletteColor::Magenta,
+        _ => PaletteColor::Blue,
+    };
+    paint(line, color)
+}
+
+/// Counts the terminal columns a logo line takes. Logos only use single-width characters (ASCII
+/// and block elements) so every char is one column, while len() would count a block element's 3
+/// UTF-8 bytes and push the info column out of line
+pub fn get_display_width(line: &str) -> usize {
+    line.chars().count()
+}
+
+/// How the logo is colored, set by `color` in the [logo] section of the config file
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LogoColor {
+    /// The distro's own colors
+    Default,
+    /// The classic rainbow Apple stripes (macOS only, other distros keep their own colors)
+    Rainbow,
+    /// The whole logo in one color
+    Solid(Color),
+}
+
+/// Parses the [logo] color from the config file: "default", "rainbow", a color name ("white",
+/// "bright white") or a hex code ("#ff8800"). Anything else falls back to the default colors
+pub fn parse_logo_color(value: &str) -> LogoColor {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("rainbow") {
+        return LogoColor::Rainbow;
+    }
+    // Non-ASCII is never a valid color, and colored's hex parser slices by byte index (would panic)
+    if !value.is_ascii() {
+        return LogoColor::Default;
+    }
+    value.parse().map(LogoColor::Solid).unwrap_or(LogoColor::Default)
+}
+
 pub fn print_logo(
     logo_lines: Vec<String>,
     info_lines: Vec<String>,
     distro_id: &str,
+    logo_color: LogoColor,
     cli: &Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = std::io::stdout();
@@ -78,13 +129,20 @@ pub fn print_logo(
     } else {
         let max_lines = logo_lines.len().max(info_lines.len());
         // We get the maximum length from the logo using .max()
-        let logo_column_width = logo_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+        let logo_column_width = logo_lines.iter().map(|l| get_display_width(l)).max().unwrap_or(0);
 
         for i in 0 .. max_lines {
             if i < logo_lines.len() {
-                write!(handle, "{}", colorize_logo_line(distro_id, &logo_lines[i]))?;
-                let padding =
-                    logo_column_width.saturating_sub(logo_lines[i].len()) + cli.padding as usize;
+                let colored_line = match logo_color {
+                    LogoColor::Solid(color) => logo_lines[i].color(color),
+                    LogoColor::Rainbow if distro_id == "macos" => {
+                        colorize_macos_logo_line(&logo_lines[i], i)
+                    },
+                    _ => colorize_logo_line(distro_id, &logo_lines[i]),
+                };
+                write!(handle, "{}", colored_line)?;
+                let padding = logo_column_width.saturating_sub(get_display_width(&logo_lines[i]))
+                    + cli.padding as usize;
                 write!(handle, "{:width$}", "", width = padding)?;
             } else {
                 // when past logo lines, print spaces that are logo_column_width + padding

@@ -3,29 +3,36 @@ use sysinfo::System;
 
 use crate::{
     cli::Cli,
-    common::{extract_numeric_value, round_to_two_decimal},
+    common::{
+        PaletteColor, extract_numeric_value, format_cpu_cores, format_frequency, format_screen,
+        format_screen_key, paint,
+    },
     config::Config,
     platform::{self, get_power_draw},
     sysinfo::*,
 };
 
+/// Colors a usage percentage (RAM, swap, disk), low is green and high is red
 fn color_percentage(percentage: u64) -> ColoredString {
+    let text = format!("{}%", percentage);
     if percentage < 40 {
-        format!("{}%", percentage).green()
+        paint(&text, PaletteColor::Green)
     } else if (40 .. 80).contains(&percentage) {
-        format!("{}%", percentage).yellow()
+        paint(&text, PaletteColor::Yellow)
     } else {
-        format!("{}%", percentage).red()
+        paint(&text, PaletteColor::Red)
     }
 }
 
+/// Colors a charge percentage (battery), low is red and high is green
 fn color_percentage_inverse(percentage: f64) -> ColoredString {
+    let text = format!("{}%", percentage);
     if percentage < 30.0 {
-        format!("{}%", percentage).red()
+        paint(&text, PaletteColor::Red)
     } else if (30.0 .. 70.0).contains(&percentage) {
-        format!("{}%", percentage).yellow()
+        paint(&text, PaletteColor::Yellow)
     } else {
-        format!("{}%", percentage).green()
+        paint(&text, PaletteColor::Green)
     }
 }
 
@@ -33,7 +40,7 @@ pub fn display_os() -> String {
     format!(
         "{} {} ({})",
         "OS:".bold(),
-        get_os_name(),
+        platform::format_os_name(),
         std::env::consts::ARCH // CPU Architecture the program was compiled for
     )
 }
@@ -42,22 +49,31 @@ pub fn display_kernel() -> String {
     format!("{} {}", "Kernel:".bold(), platform::format_kernel_version())
 }
 
-pub fn display_cpu(sys: &System, config: &Config) -> String {
-    let cpu_name = get_cpu_name(sys);
+/// Formats the shell line, e.g. "Shell: fish 4.9.3", the version is left out when it can't be found
+pub fn display_shell() -> Option<String> {
+    let (name, version) = get_shell()?;
+    match version {
+        Some(version) => Some(format!("{} {} {}", "Shell:".bold(), name, version)),
+        None => Some(format!("{} {}", "Shell:".bold(), name)),
+    }
+}
 
-    let cpu_frequency;
-    if config.display.cpu_frequency {
-        let frequency = get_cpu_frequency(sys);
-        if frequency >= 1000 {
-            cpu_frequency = format!(" @ {} GHz ", round_to_two_decimal(frequency as f64 / 1000.0))
-        } else {
-            cpu_frequency = format!(" @ {} MHz ", frequency)
-        }
-    } else {
-        cpu_frequency = String::from("");
+/// Formats the CPU line, e.g. "CPU: Apple M5 Pro (6+12) @ 4.61 GHz", the frequency is only shown
+/// when cpu_frequency is on
+pub fn display_cpu(sys: &System, config: &Config) -> String {
+    let mut line = format!("{} {}", "CPU:".bold(), get_cpu_name(sys));
+
+    if let Some(cores) = get_cpu_core_counts().and_then(|counts| format_cpu_cores(&counts)) {
+        line.push_str(&format!(" ({})", cores));
     }
 
-    format!("{} {}{}", "CPU:".bold(), cpu_name, cpu_frequency)
+    if config.display.cpu_frequency
+        && let Some(frequency) = format_frequency(get_cpu_frequency(sys))
+    {
+        line.push_str(&format!(" @ {}", frequency));
+    }
+
+    line
 }
 
 pub fn display_ram_usage(sys: &System) -> String {
@@ -100,6 +116,34 @@ pub fn display_power_draw() -> Option<String> {
     }
 }
 
+/// Formats the local IPv4 line, e.g. "Local IPv4 (en0): 192.168.1.20/24"
+pub fn display_local_ipv4() -> Option<String> {
+    get_local_ipv4().map(|(interface, address)| {
+        format!("{} {}", format!("Local IPv4 ({}):", interface).bold(), address)
+    })
+}
+
+/// Formats the local IPv6 line, e.g. "Local IPv6 (en0): 2001:db8::1/64", None when the primary
+/// interface has no global IPv6 address
+pub fn display_local_ipv6() -> Option<String> {
+    get_local_ipv6().map(|(interface, address)| {
+        format!("{} {}", format!("Local IPv6 ({}):", interface).bold(), address)
+    })
+}
+
+/// Formats the Tailscale IP line, e.g. "Tailscale IP: 100.81.138.51", None when Tailscale is not
+/// connected
+pub fn display_tailscale_ip() -> Option<String> {
+    get_tailscale_ipv4().map(|address| format!("{} {}", "Tailscale IP:".bold(), address))
+}
+
+/// Formats the Tailscale host line, e.g. "Tailscale Host: laptop.tailnet.ts.net", None when
+/// Tailscale is not connected or MagicDNS doesn't answer
+pub fn display_tailscale_host() -> Option<String> {
+    let host = get_tailscale_host(get_tailscale_ipv4()?)?;
+    Some(format!("{} {}", "Tailscale Host:".bold(), host))
+}
+
 pub fn display_disk_usage() -> String {
     let (total, used, percentage) = platform::get_disk_usage();
     format!(
@@ -115,37 +159,35 @@ pub fn display_gpu_name(cli: &Cli) -> Option<String> {
     platform::get_gpu_name(cli).map(|gpu_name| format!("{} {}", "GPU:".bold(), gpu_name))
 }
 
-pub fn display_screen(config: &Config) -> Option<String> {
+/// Formats one Screen line per display, e.g. "Screen (Color LCD): 3456x2234 @ 120Hz". With a
+/// single display the name is left out so the line stays "Screen: 3456x2234 @ 120Hz"
+pub fn display_screens(config: &Config) -> Vec<String> {
     if !config.display.resolution && !config.display.refresh_rate {
-        // I'm sure theres a better way to do this, but this works as well
-        return None;
+        return Vec::new();
     }
 
-    let resolution;
-    if config.display.resolution
-        && let Some((width, height)) = get_screen_resolution()
-    {
-        resolution = format!("{}x{}", width, height);
-    } else {
-        resolution = String::from("");
-    }
+    let screens = get_screens();
+    let count = screens.len();
 
-    let refresh_rate;
-    if config.display.refresh_rate
-        && let Some(rr) = get_screen_refresh_rate()
-    {
-        refresh_rate = format!("@ {}Hz", rr);
-    } else {
-        refresh_rate = String::from("");
-    }
+    screens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, screen)| {
+            let resolution = config.display.resolution.then_some((screen.width, screen.height));
+            let refresh_rate = screen.refresh_rate.filter(|_| config.display.refresh_rate);
+            let value = format_screen(resolution, refresh_rate)?;
+            let key = format!("{}:", format_screen_key(&screen.name, index, count));
 
-    Some(format!("{} {} {}", "Screen:".bold(), resolution, refresh_rate))
+            Some(format!("{} {}", key.bold(), value))
+        })
+        .collect()
 }
 
 pub fn display_identifier() -> Vec<String> {
     let mut host_name = String::from("");
     if let Some(host) = get_host_name() {
-        host_name = host;
+        // macOS reports the Bonjour name (Johns-MacBook-Pro.local), the .local suffix is just noise
+        host_name = host.strip_suffix(".local").map(str::to_string).unwrap_or(host);
     }
     let username = get_username();
 

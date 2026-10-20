@@ -12,17 +12,32 @@ src/
 ├── <a href="#mainrs">main.rs</a>         # Entry point
 ├── <a href="#configrs">config.rs</a>       # TOML config
 ├── <a href="#clirs">cli.rs</a>          # CLI argument parsing
+├── <a href="#cachers">cache.rs</a>        # GPU name cache (Linux only)
 ├── common/         # Common functions across OSes and files
 │   ├── <a href="#displayrs">display.rs</a>  # Display formatting functions
+│   ├── <a href="#logors">logo.rs</a>     # Logo loading, coloring and printing
+│   ├── <a href="#paletters">palette.rs</a>  # Accent colors and truecolor detection
 │   └── <a href="#utilsrs">utils.rs</a>    # Shared utility functions
 ├── platform/       # OS-specific implementations
 │   ├── <a href="#modrs-platform">mod.rs</a>      # Exposes modules based on OS
-│   ├── linux.rs       
-│   └── macos.rs        
+│   ├── <a href="#linuxrs">linux.rs</a>    # /proc, /sys, ELF, display-info
+│   └── <a href="#macosrs">macos.rs</a>    # IOKit, CoreGraphics, sysctl, PF_ROUTE, Mach-O
 └── sysinfo/        # Cross-platform system info
-    └── <a href="#sharedrs">shared.rs</a>   # Generic sysinfo functions
+    ├── <a href="#sharedrs">shared.rs</a>   # Generic sysinfo functions
+    ├── <a href="#shellrs">shell.rs</a>    # Shell detection and its version cache
+    ├── <a href="#networkrs">network.rs</a>  # Local IPv4/IPv6 and Tailscale addresses
+    └── <a href="#tailscalers">tailscale.rs</a> # Tailscale detection and MagicDNS lookup
 tests/              # Tests for "cargo test"
-└── <a href="#utils_testsrs">utils_tests.rs</a>  # Tests specific to utils
+├── <a href="#utils_testsrs">utils_tests.rs</a>  # Tests specific to utils
+├── config_tests.rs  # Old config files still parse
+├── logo_tests.rs    # [logo] color parsing
+├── palette_tests.rs # Palette, truecolor detection, logo shape
+├── shell_tests.rs   # Shell name/version parsing and the version cache
+├── network_tests.rs # Interface and address selection, /proc/net parsers
+├── tailscale_tests.rs # Tailscale checks, PTR query and DNS reply parsing
+├── macos_tests.rs   # macOS-only platform functions
+├── linux_tests.rs   # Linux-only platform functions
+└── cache_test.rs    # GPU cache (Linux only)
 scripts/
 └── <a href="runtimesh">runtime.sh</a>      # Measure program's runtime
 
@@ -36,7 +51,7 @@ Entry point for the program, **handles showing or not showing modules** based on
 
 - **Gets command line arguments** through [clap](https://docs.rs/clap/latest/clap/)
 - **Creates a System variable** used for sysinfo functions
--  If the "--all" or "-a" flag is given, **skips config file parsing** entirely to enable all modules (This does not skip unsupported [platform specific modules](#platform)).
+-  If the "--all" or "-a" flag is given, **enables all modules** and only reads the `[logo]` table of the config file, without creating it (This does not skip unsupported [platform specific modules](#platform)).
 <br>Else, **gets config options** from [config.rs](#configrs) and shows them based on their boolean value.
 - Gets the distro id from the dedicated function inside the **platform** crate
 - Creates a **String vector** and adds the return values of the [display functions](#displayrs) to it if the config boolean for it is true and if the function returns Some(), if it returns None or the config for it is false it **just skips it**.
@@ -48,7 +63,8 @@ Main file for configuration handling, **creates and parses a config file** or en
 - Creates a **DisplayConfig** struct that includes all modules as boolean values
 - **Creates two implementations** for DisplayConfig: **Default** for initial file creation and **All** where all modules are set to true
 - **load_config()** -> returns a DisplayConfig struct from parsing the **config.toml**. If the file does not exist it will create it in the [default config directory](https://docs.rs/dirs/latest/dirs/fn.config_dir.html) and print a message.
-- **load_all_config()** -> runs the set_all() function for DisplayConfig and returns its value.
+- **load_all_config()** -> turns every module on and keeps the `[logo]` settings, read without creating the file or printing anything.
+- Lines added after the config format was released (shell, ipv4, ipv6, tailscale_ip, tailscale_host) and the whole `[logo]` table are **defaulted**, so older config files still parse.
 
 ## cli.rs
 Uses [clap](https://docs.rs/clap/latest/clap/) to **parse command line arguments** and creates a public Cli struct with all the possible flags in it. This file also decides which description every flag should have when running "rustfetch --help".
@@ -64,13 +80,28 @@ Also contains internal private functions such as **color_percentage()**, specifi
 ## utils.rs
 Contains **general purpose functions** shared across multiple files. These must undergo the highest level of [testing](#utils_testsrs) as they're used everywhere. 
 
+## logo.rs
+Loads the ASCII logos from `ascii/`, colors them (the distro's own color, the rainbow Apple stripes or a solid `[logo]` color) and prints them next to the info lines. Widths are counted in **terminal columns** (`chars().count()`), not bytes, since block elements such as `█` are 3 bytes but one column.
+
+## palette.rs
+The six accent colors used by the rainbow logo and the usage percentages, in **one place**: a muted 24-bit palette when `COLORTERM` is `truecolor` or `24bit` (the same rule the colored crate uses) and the plain ANSI colors everywhere else. Detection is read once per process.
+
+## cache.rs
+Caches the GPU's pretty name, which on **Linux** comes from wgpu and takes ~45ms. Compiled only on Linux: macOS reads its GPU from IOKit in well under a millisecond, so wgpu isn't even a dependency there.
+
 ## mod.rs (Platform)
 Exposes modules based on operating system, for example:
 
 - If the target OS is **Linux**, the "platform" module will use functions inside linux.rs
 - If the target OS is **MacOS**, the "platform" module will use functions inside macos.rs
 
-Note that **every function that's written in one file must be written in the other**, even if it will never run (As usual, the Rust compiler being strict)
+Note that **every function that's called from shared code must be written in both files** (As usual, the Rust compiler being strict). Linux-only callers such as cache.rs are compiled only on Linux instead of getting macOS stubs.
+
+## linux.rs
+Reads `/proc`, `/sys` and `/etc/os-release`, finds the `.rodata` section of ELF binaries (where shells keep their version string), lists displays through display-info and asks `/proc/net` for the default routes and IPv6 address flags.
+
+## macos.rs
+Talks to the system directly instead of spawning tools (`system_profiler`, `ioreg` and `ifconfig` take tens of milliseconds each): **IOKit** for the GPU and battery, **CoreGraphics** for displays (AppKit would cost ~13ms just to load), `sysctl` for CPU core types and process arguments, a **PF_ROUTE** socket for the default route, an `ioctl` for IPv6 address flags and the Mach-O `__cstring` section for shell versions.
 
 ## shared.rs
 Contains all functions which run **regardless of OS**, the [sysinfo crate](https://docs.rs/sysinfo/latest/sysinfo/) is most used here.
@@ -79,8 +110,17 @@ Every function that uses sysinfo functions requires a **reference to the main Sy
 
 Functions inside this file should never handle displaying the values, as that is almost always exclusively handled in [display.rs](#displayrs).
 
+## shell.rs
+Finds the shell rustfetch was started from by walking up the parent processes (falling back to `$SHELL`) and gets its version from the **cheapest source first**: an environment variable, the install path (Homebrew Cellar, Nix store), the version string compiled into the binary, and only then `<shell> --version`. That last one costs 2-6ms, so its answer is kept in `shell.toml` in the cache directory until the shell's executable changes. It lives here rather than in platform/ because only reading process info and binary sections differs between OSes, the logic is the same.
+
+## network.rs
+Reads every interface address once with `getifaddrs` and picks what the Local IPv4, Local IPv6 and Tailscale IP lines show: the interface carrying the default route, falling back to the first physical one when the route goes through a tunnel without a usable address (a Tailscale exit node). The selection functions are pure so they can be [tested](#tests) on every OS, the same goes for the Linux `/proc/net` parsers kept here.
+
+## tailscale.rs
+Tells Tailscale's tunnel apart from other VPNs (on macOS every VPN is a `utun`, so it also needs Tailscale's fixed `fd7a:115c:a1e0::/48` address) and gets the MagicDNS name with one hand-built PTR query to `100.100.100.100`, which takes ~0.5ms where `tailscale status` takes ~30ms.
+
 ## utils_tests.rs
-Testing file for utils functions, the testing requirements are usually:
+<a id="tests"></a>Testing file for utils functions, the other test files follow the same rules. Files named after an OS only build on that OS, everything else is pure and runs everywhere. The testing requirements are usually:
 - **Correct input** -> Should return the expected value
 - **Edge cases** -> Used to **enhance error handling** and **understand how the function behaves** deeply. These should be **technically correct though very unlikely** inputs (E.g: rounding an f64::Infinity) and checking the output is still Infinity
 - **Incorrect input** -> Testing the function with an **input thats incoherent with what the function is asking**, **assessing the function is returning an error** and, if present, checking if the **error message** is correct

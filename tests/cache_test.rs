@@ -1,4 +1,7 @@
 //! Test the serialization, deserialization and re-extraction of values stored in cache.
+//! Linux only: the GPU cache doesn't exist on macOS, which reads its GPU from IOKit
+
+#![cfg(target_os = "linux")]
 
 use clap::Parser;
 use rustfetch::{cache::*, cli::Cli, platform::get_gpu_name};

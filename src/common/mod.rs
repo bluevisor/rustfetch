@@ -6,3 +6,6 @@ pub use display::*;
 
 mod logo;
 pub use logo::*;
+
+mod palette;
+pub use palette::*;

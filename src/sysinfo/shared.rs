@@ -1,7 +1,8 @@
-use display_info::DisplayInfo;
+use std::ffi::CString;
+
 use sysinfo::*;
 
-use crate::{common::*, config::Config};
+use crate::{common::*, config::Config, platform};
 
 const BYTES_TO_GB: u64 = 1_000_000_000;
 const KIB_TO_MB: u64 = 1024;
@@ -15,9 +16,15 @@ pub fn create_system(config: &Config) -> System {
         sys.refresh_memory();
     }
     if config.display.cpu {
-        // Refreshing all cpu info is cheap performance-wise and just freshing the cpu name is not
-        // really readable with this crate imo
-        sys.refresh_cpu_all();
+        // The first refresh always reads the CPU name, the frequency costs an extra IOKit lookup
+        // (~0.25 ms on Apple Silicon) so only ask for it when it is displayed. CPU usage needs two
+        // samples so it is never worth refreshing here
+        let refresh_kind = if config.display.cpu_frequency {
+            CpuRefreshKind::nothing().with_frequency()
+        } else {
+            CpuRefreshKind::nothing()
+        };
+        sys.refresh_cpu_specifics(refresh_kind);
     }
     sys
 }
@@ -65,21 +72,17 @@ pub fn get_uptime() -> String {
     }
 }
 
-/// Gets disk (root) usage and returns in GB and percentage (floored)
+/// Gets the usage of the filesystem holding `directory` as (total GB, used GB, percentage floored).
+/// One statfs call takes microseconds where sysinfo's disk list took ~30 ms on macOS, since it asks
+/// every mounted volume for its purgeable space. Free space is what a user can still write (no
+/// purgeable space or root reserve), the same number `df` and fastfetch show
 pub fn get_directory_usage(directory: &str) -> (u64, u64, u64) {
-    let disks = Disks::new_with_refreshed_list();
-
-    let disk = match disks
-        .iter()
-        .find(|disk| disk.mount_point().to_string_lossy() == directory)
-        .or_else(|| disks.iter().find(|disk| disk.mount_point() == std::path::Path::new("/")))
-    {
-        Some(disk) => disk,
-        _ => return (0, 0, 0),
+    let space = CString::new(directory)
+        .ok()
+        .and_then(|path| platform::get_filesystem_space(&path));
+    let Some((total, free)) = space else {
+        return (0, 0, 0);
     };
-
-    let total = disk.total_space();
-    let free = disk.available_space();
     let used = total.saturating_sub(free);
 
     let percentage = get_percentage_from_part(used as f64, total as f64).unwrap_or(0);
@@ -90,6 +93,11 @@ pub fn get_directory_usage(directory: &str) -> (u64, u64, u64) {
 /// Gets os name on any given system
 pub fn get_os_name() -> String {
     System::name().unwrap_or_else(|| String::from("Unknown"))
+}
+
+/// Gets the OS version on any given system, on macOS this is the product version (e.g. 26.7.1)
+pub fn get_os_version() -> Option<String> {
+    System::os_version()
 }
 
 /// Gets kernel version on any given system
@@ -132,9 +140,17 @@ pub fn get_cpu_frequency(sys: &System) -> u64 {
     sys.cpus().first().map(|cpu| cpu.frequency()).unwrap_or_else(|| 0)
 }
 
+/// Gets the CPU core counts, one entry per core type on hybrid CPUs (e.g. [6, 12] on an M5 Pro)
+/// and the physical core count everywhere else
+pub fn get_cpu_core_counts() -> Option<Vec<usize>> {
+    platform::get_cpu_core_types()
+        .or_else(|| System::physical_core_count().map(|count| vec![count]))
+}
+
 /// Gets the pretty version of the GPU through wgpu, this function is really slow (~45ms), so its
 /// value is stored in the cache and only retrieved at first startup or if the system ids do not
-/// match the ones in the cache
+/// match the ones in the cache. Linux only, macOS reads its GPU from IOKit
+#[cfg(target_os = "linux")]
 pub fn get_gpu_name_pretty() -> Option<String> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
@@ -158,20 +174,25 @@ pub fn get_gpu_name_pretty() -> Option<String> {
     None
 }
 
-/// Gets the screen resolution and returns it as (width, height)
-pub fn get_screen_resolution() -> Option<(u64, u64)> {
-    let displays = DisplayInfo::all().ok()?;
-    let display = displays.first()?;
-    Some((display.width as u64, display.height as u64))
+/// A connected display, width and height are in physical pixels on macOS and as reported by
+/// X11/Wayland elsewhere
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenInfo {
+    pub name: String,
+    pub width: u64,
+    pub height: u64,
+    /// None if the display reports 0 Hz, some older panels do
+    pub refresh_rate: Option<u64>,
+    pub is_primary: bool,
 }
 
-pub fn get_screen_refresh_rate() -> Option<u64> {
-    // repeated variable between this and get_screen_resolution, we can pass a reference if display
-    // is true later on
-    let displays = DisplayInfo::all().ok()?;
-    let display = displays.first()?;
-
-    (display.frequency > 0.0).then_some(display.frequency as u64)
+/// Gets every connected display with the primary one first, the rest keep the order the OS lists
+/// them in. Returns an empty Vec if there is no display server (e.g. a TTY or SSH session)
+pub fn get_screens() -> Vec<ScreenInfo> {
+    let mut screens = platform::get_active_screens().unwrap_or_default();
+    // sort_by_key is stable so only the primary display moves
+    screens.sort_by_key(|screen| !screen.is_primary);
+    screens
 }
 
 pub fn get_host_name() -> Option<String> {
