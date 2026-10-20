@@ -4,8 +4,8 @@ use sysinfo::System;
 use crate::{
     cli::Cli,
     common::{
-        PaletteColor, extract_numeric_value, format_cpu_cores, format_frequency, format_screen,
-        format_screen_key, paint, paint_track, render_bar,
+        PaletteColor, extract_numeric_value, format_battery_status, format_cpu_cores,
+        format_frequency, format_screen, format_screen_key, paint, paint_track, render_bar,
     },
     config::Config,
     platform::{self, get_power_draw},
@@ -124,25 +124,22 @@ pub fn display_uptime() -> String {
     format!("{} {}", "Uptime:".bold(), get_uptime())
 }
 
-pub fn display_battery() -> Option<String> {
+/// Formats the battery line, e.g. "Battery: 80% (Discharging)". While plugged in the brackets name
+/// the adapter when ac_adapter is on (macOS), e.g. "Battery: 64% (Charging, 140W USB-C Power
+/// Adapter)", see format_battery_status
+pub fn display_battery(config: &Config) -> Option<String> {
     let (capacity, status) = platform::get_battery();
-    if capacity != "Unavailable" && status != "Unavailable" {
-        Some(format!(
-            "{} {} ({})",
-            "Battery:".bold(),
-            color_percentage_inverse(capacity.parse::<f64>().unwrap_or(0.0)),
-            status
-        ))
-    } else {
-        None
+    if capacity == "Unavailable" || status == "Unavailable" {
+        return None;
     }
-}
 
-/// Formats the AC adapter line, e.g. "AC Adapter: 140W USB-C Power Adapter", None on battery power
-/// and on Macs without a battery
-#[cfg(target_os = "macos")]
-pub fn display_ac_adapter() -> Option<String> {
-    platform::get_ac_adapter().map(|adapter| format!("{} {}", "AC Adapter:".bold(), adapter))
+    let adapter = config.display.ac_adapter.then(platform::get_ac_adapter).flatten();
+    Some(format!(
+        "{} {} ({})",
+        "Battery:".bold(),
+        color_percentage_inverse(capacity.parse::<f64>().unwrap_or(0.0)),
+        format_battery_status(&status, adapter.as_deref())
+    ))
 }
 
 pub fn display_power_draw() -> Option<String> {
@@ -167,6 +164,12 @@ pub fn display_local_ipv6() -> Option<String> {
     get_local_ipv6().map(|(interface, address)| {
         format!("{} {}", format!("Local IPv6 ({}):", interface).bold(), address)
     })
+}
+
+/// Formats the Wi-Fi line, e.g. "Wi-Fi: SeenHealth IT", None when not connected to Wi-Fi (and on
+/// Linux, where it isn't read yet)
+pub fn display_wifi() -> Option<String> {
+    get_wifi_ssid().map(|ssid| format!("{} {}", "Wi-Fi:".bold(), ssid))
 }
 
 /// Formats the Tailscale IP line, e.g. "Tailscale IP: 100.81.138.51", None when Tailscale is not

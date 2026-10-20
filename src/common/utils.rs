@@ -6,6 +6,8 @@ use std::{
     path::Path,
 };
 
+use serde::{Serialize, de::DeserializeOwned};
+
 const KIB_IN_MB: f64 = 1024.0;
 const KIB_IN_GB: f64 = 1024.0 * 1024.0; // We are declaring it as f64 as we'll use it as a float in this file to minimize casting
 /// Eighth blocks that end a usage bar's filled part, from 1/8 to 7/8 of a cell
@@ -177,4 +179,50 @@ pub fn render_bar(percent: u64, width: usize) -> (String, String) {
     let empty = "░".repeat(width.saturating_sub(filled.chars().count()));
 
     (filled, empty)
+}
+
+/// Builds what the Battery line shows in brackets: the status, followed by the power adapter while
+/// one is plugged in. "AC Connected" only says that an adapter is plugged in, so the adapter takes
+/// its place. On battery power, or when the adapter is unknown, the status is left as it is
+///
+/// For example: ("Charging", Some("140W USB-C Power Adapter")) returns
+/// "Charging, 140W USB-C Power Adapter" and ("AC Connected", Some("96W")) returns "96W"
+pub fn format_battery_status(status: &str, adapter: Option<&str>) -> String {
+    // AdapterDetails can outlive the adapter being unplugged
+    let adapter = adapter.filter(|adapter| !adapter.is_empty() && status != "Discharging");
+    match adapter {
+        None => status.to_string(),
+        Some(adapter) if status == "AC Connected" => adapter.to_string(),
+        Some(adapter) => format!("{}, {}", status, adapter),
+    }
+}
+
+/// Reads a TOML cache file (the shell versions, the Wi-Fi names), a missing, unreadable or
+/// corrupted file is an empty cache
+pub fn read_cache_file<T: DeserializeOwned + Default>(path: &Path) -> T {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| toml::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+/// Writes a TOML cache file. It is written to a temporary file that then replaces the cache, so a
+/// rustfetch started at the same time (several terminal panes opening) never reads half of it.
+/// Failures are ignored, whatever was cached is just looked up again next time
+pub fn write_cache_file<T: Serialize>(path: &Path, cache: &T) {
+    let Ok(content) = toml::to_string(cache) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let temporary = path.with_extension(format!("toml.{}", std::process::id()));
+    // A write that fails halfway (a full disk) leaves part of the temporary file behind too
+    if fs::write(&temporary, content)
+        .and_then(|()| fs::rename(&temporary, path))
+        .is_err()
+    {
+        let _ = fs::remove_file(&temporary);
+    }
 }

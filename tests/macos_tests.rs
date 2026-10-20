@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "macos")]
 
-use std::ffi::CStr;
+use std::{ffi::CStr, mem::offset_of, net::Ipv4Addr};
 
 use rustfetch::{platform::*, sysinfo::*};
 
@@ -461,4 +461,233 @@ fn test_ipv6_state_from_darwin_flags() {
     assert_eq!(ipv6_state_from_darwin_flags(0x0002), Ipv6AddressState::Unusable);
     assert_eq!(ipv6_state_from_darwin_flags(0x0004), Ipv6AddressState::Unusable);
     assert_eq!(ipv6_state_from_darwin_flags(0x0008), Ipv6AddressState::Unusable);
+}
+
+// Wi-Fi tests
+
+/// Index of en0 in the route dumps below
+const EN0: u16 = 15;
+const ROUTER_MAC: [u8; 6] = [0xcc, 0x03, 0xd9, 0x3a, 0xed, 0xd0];
+
+/// Builds a 16-byte sockaddr_in
+fn sockaddr_in(octets: [u8; 4]) -> Vec<u8> {
+    let mut sockaddr = vec![16, 2, 0, 0];
+    sockaddr.extend_from_slice(&octets);
+    sockaddr.resize(16, 0);
+    sockaddr
+}
+
+/// Builds the sockaddr_dl gateway of an ARP entry, a link address without an interface name
+fn sockaddr_dl_mac(mac: &[u8]) -> Vec<u8> {
+    let mut sockaddr = vec![20, 18, EN0 as u8, 0, 6, 0, mac.len() as u8, 0];
+    sockaddr.extend_from_slice(mac);
+    sockaddr.resize(20, 0);
+    sockaddr
+}
+
+/// Builds one routing message as the routing sysctls return it: an rt_msghdr then its sockaddrs
+fn route_message(index: u16, flags: i32, addrs: i32, sockaddrs: &[Vec<u8>]) -> Vec<u8> {
+    let mut message = vec![0u8; size_of::<libc::rt_msghdr>()];
+    for sockaddr in sockaddrs {
+        message.extend_from_slice(sockaddr);
+    }
+    let length = message.len() as u16;
+    let mut set = |offset: usize, bytes: &[u8]| {
+        message[offset .. offset + bytes.len()].copy_from_slice(bytes);
+    };
+    set(offset_of!(libc::rt_msghdr, rtm_msglen), &length.to_ne_bytes());
+    set(offset_of!(libc::rt_msghdr, rtm_version), &[5]);
+    set(offset_of!(libc::rt_msghdr, rtm_index), &index.to_ne_bytes());
+    set(offset_of!(libc::rt_msghdr, rtm_flags), &flags.to_ne_bytes());
+    set(offset_of!(libc::rt_msghdr, rtm_addrs), &addrs.to_ne_bytes());
+    message
+}
+
+/// A full dump shaped like this Mac's `netstat -rn`: default routes through en0 and Tailscale, a
+/// VPN's 0.0.0.0/1 half, the router's cloning route and the ARP entries of a neighbour and the
+/// router. The NET_RT_FLAGS ones get_interface_router reads are subsets of it
+fn route_dump(with_router_entry: bool) -> Vec<u8> {
+    let (up, gateway, host, llinfo) = (0x1, 0x2, 0x4, 0x400);
+    let addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    let empty_netmask = vec![0, 0, 0, 0];
+    let mut dump = route_message(
+        EN0,
+        up | gateway,
+        addrs,
+        &[
+            sockaddr_in([0; 4]),
+            sockaddr_in([172, 18, 7, 1]),
+            empty_netmask.clone(),
+        ],
+    );
+    dump.extend(route_message(
+        22,
+        up,
+        addrs,
+        &[sockaddr_in([0; 4]), sockaddr_dl("utun4"), empty_netmask],
+    ));
+    dump.extend(route_message(
+        EN0,
+        up | gateway,
+        addrs,
+        &[
+            sockaddr_in([0; 4]),
+            sockaddr_in([10, 0, 0, 1]),
+            vec![5, 2, 0, 0, 128, 0, 0, 0],
+        ],
+    ));
+    dump.extend(route_message(
+        EN0,
+        up | host,
+        RTA_DST | RTA_GATEWAY,
+        &[sockaddr_in([172, 18, 7, 1]), sockaddr_dl_mac(&[])],
+    ));
+    dump.extend(route_message(
+        EN0,
+        up | host | llinfo,
+        RTA_DST | RTA_GATEWAY,
+        &[
+            sockaddr_in([172, 18, 7, 70]),
+            sockaddr_dl_mac(&[0xfa, 0x31, 0x1b, 0xb4, 0x3e, 0xdc]),
+        ],
+    ));
+    if with_router_entry {
+        dump.extend(route_message(
+            EN0,
+            up | host | llinfo,
+            RTA_DST | RTA_GATEWAY,
+            &[sockaddr_in([172, 18, 7, 1]), sockaddr_dl_mac(&ROUTER_MAC)],
+        ));
+    }
+    dump
+}
+
+#[test]
+fn test_siocgifmedia_matches_header() {
+    // Value of SIOCGIFMEDIA printed by a C program including <sys/sockio.h> (ifmediareq is 44
+    // bytes since <net/if.h> packs it)
+    assert_eq!(SIOCGIFMEDIA, 0xc02c_6938);
+}
+
+#[test]
+fn test_is_associated_wifi_media() {
+    // ifm_active and ifm_status of this Mac's interfaces: en0 (Wi-Fi, joined), en9 (Ethernet up),
+    // en1 (Thunderbolt Ethernet down) and llw0 (low latency WLAN)
+    assert!(is_associated_wifi_media(0x80, 0x3));
+    assert!(!is_associated_wifi_media(0x10_0036, 0x3));
+    assert!(!is_associated_wifi_media(0x10_0020, 0x1));
+    assert!(!is_associated_wifi_media(0x22, 0));
+    // Wi-Fi turned on but not joined to any network
+    assert!(!is_associated_wifi_media(0x80, 0x1));
+    assert!(!is_associated_wifi_media(0x80, 0));
+}
+
+#[test]
+fn test_mac_from_sockaddr_dl() {
+    // after the interface name, like getifaddrs' AF_LINK entries
+    assert_eq!(
+        mac_from_sockaddr_dl(&sockaddr_dl("en0")),
+        Some([0x0a, 0x6f, 0xb5, 0x20, 0xc6, 0x02])
+    );
+    // without a name, like an ARP entry's gateway
+    assert_eq!(mac_from_sockaddr_dl(&sockaddr_dl_mac(&ROUTER_MAC)), Some(ROUTER_MAC));
+}
+
+#[test]
+fn test_mac_from_sockaddr_dl_rejects_bad_input() {
+    // an ARP entry still being resolved has no address, an all-zero one isn't real either
+    assert_eq!(mac_from_sockaddr_dl(&sockaddr_dl_mac(&[])), None);
+    assert_eq!(mac_from_sockaddr_dl(&sockaddr_dl_mac(&[0; 6])), None);
+    // FireWire's 8 byte addresses aren't MAC addresses
+    assert_eq!(mac_from_sockaddr_dl(&sockaddr_dl_mac(&[1; 8])), None);
+    // not AF_LINK, or cut short
+    let mut not_link = sockaddr_dl_mac(&ROUTER_MAC);
+    not_link[1] = 2;
+    assert_eq!(mac_from_sockaddr_dl(&not_link), None);
+    assert_eq!(mac_from_sockaddr_dl(&sockaddr_dl_mac(&ROUTER_MAC)[.. 12]), None);
+    assert_eq!(mac_from_sockaddr_dl(&[]), None);
+}
+
+const ROUTER: Ipv4Addr = Ipv4Addr::new(172, 18, 7, 1);
+
+#[test]
+fn test_find_default_gateway() {
+    let dump = route_dump(true);
+    // the VPN half (0.0.0.0/1 through 10.0.0.1) is skipped
+    assert_eq!(find_default_gateway(&dump, EN0), Some(ROUTER));
+    // Tailscale's default route has no gateway, an unknown index has no routes at all
+    assert_eq!(find_default_gateway(&dump, 22), None);
+    assert_eq!(find_default_gateway(&dump, 3), None);
+}
+
+#[test]
+fn test_find_arp_entry() {
+    let dump = route_dump(true);
+    // the router's cloning route has no MAC yet, its ARP entry does
+    assert_eq!(find_arp_entry(&dump, EN0, ROUTER), Some(ROUTER_MAC));
+    assert_eq!(
+        find_arp_entry(&dump, EN0, Ipv4Addr::new(172, 18, 7, 70)),
+        Some([0xfa, 0x31, 0x1b, 0xb4, 0x3e, 0xdc])
+    );
+    // the default route's 0.0.0.0 isn't an ARP entry, and the entries are en0's only
+    assert_eq!(find_arp_entry(&dump, EN0, Ipv4Addr::UNSPECIFIED), None);
+    assert_eq!(find_arp_entry(&dump, 22, ROUTER), None);
+}
+
+#[test]
+fn test_find_arp_entry_without_router_entry() {
+    // no MAC address for the router means no fingerprint, rather than a weaker one
+    assert_eq!(find_arp_entry(&route_dump(false), EN0, ROUTER), None);
+}
+
+#[test]
+fn test_find_router_in_corrupted_dump() {
+    assert_eq!(find_default_gateway(&[], EN0), None);
+    assert_eq!(find_arp_entry(&[], EN0, ROUTER), None);
+    // cut in the middle of the router's ARP entry
+    let dump = route_dump(true);
+    assert_eq!(find_arp_entry(&dump[.. dump.len() - 8], EN0, ROUTER), None);
+    // a zero message length must not loop forever
+    let mut zero_length = route_dump(true);
+    zero_length[0] = 0;
+    zero_length[1] = 0;
+    assert_eq!(find_default_gateway(&zero_length, EN0), None);
+    assert_eq!(find_arp_entry(&zero_length, EN0, ROUTER), None);
+}
+
+#[test]
+fn test_wifi_association_does_not_panic() {
+    // Depends on the machine: a Mac on Ethernet or without Wi-Fi has no link, which is fine
+    if let Some(link) = get_wifi_link("en0") {
+        assert_eq!(link.interface, "en0");
+        assert!(link.fingerprint().is_none_or(|key| key.starts_with("en0 ")));
+    }
+    // loopback, a missing interface and names that don't fit in ifm_name are never Wi-Fi
+    for interface in ["lo0", "no-such-if0", "", "an-interface-name-too-long"] {
+        assert!(!is_wifi_associated(interface), "{}", interface);
+        assert_eq!(get_wifi_link(interface), None);
+    }
+}
+
+#[test]
+fn test_read_wifi_ssid_of_non_wifi_interface() {
+    // configd has no AirPort state for loopback and CoreWLAN no Wi-Fi interface named so
+    assert_eq!(read_scan_record_ssid("lo0"), None);
+    assert_eq!(read_corewlan_ssid("lo0"), None);
+    assert_eq!(read_wifi_ssid("lo0"), None);
+}
+
+#[test]
+fn test_read_wifi_ssid_of_associated_interface() {
+    // Goes through NSKeyedUnarchiver and every CoreWLAN call, where a debug build checks each
+    // message's types. Skipped on a Mac that isn't on Wi-Fi
+    let Some(link) = (0 .. 16).find_map(|unit| get_wifi_link(&format!("en{}", unit))) else {
+        return;
+    };
+    let interface = link.interface.as_str();
+    // the scan record can be missing, or blanked by a later macOS
+    let _ = read_scan_record_ssid(interface);
+    for ssid in [read_corewlan_ssid(interface), read_wifi_ssid(interface)].into_iter().flatten() {
+        assert_eq!(sanitize_ssid(&ssid.name).as_deref(), Some(ssid.name.as_str()));
+    }
 }

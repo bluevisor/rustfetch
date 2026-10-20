@@ -1,12 +1,17 @@
 use std::{
     ffi::{CStr, CString, c_void},
     mem::offset_of,
-    net::Ipv6Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     ptr::NonNull,
     sync::OnceLock,
 };
 
+use objc2::{
+    msg_send,
+    rc::{Retained, autoreleasepool},
+    runtime::{AnyClass, AnyObject},
+};
 use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFAllocatorDefault,
 };
@@ -517,8 +522,9 @@ pub fn get_battery() -> (String, String) {
         .unwrap_or_else(|| (String::from("Unavailable"), String::from("Unavailable")))
 }
 
-/// Looks the AppleSmartBattery IOKit service up once, the Battery and AC Adapter lines both read
-/// it. None on desktops (Mac mini, Studio, Pro, iMac), which don't publish the service at all
+/// Looks the AppleSmartBattery IOKit service up once, the battery status and the power adapter
+/// shown in the Battery line both read it. None on desktops (Mac mini, Studio, Pro, iMac), which
+/// don't publish the service at all
 fn get_battery_service() -> Option<&'static IoObject> {
     // Kept for the whole run, the handle is released when the process exits
     static SERVICE: OnceLock<Option<IoObject>> = OnceLock::new();
@@ -591,7 +597,8 @@ pub fn battery_status(
 }
 
 /// Gets the connected power adapter from AppleSmartBattery's AdapterDetails, e.g. "140W USB-C
-/// Power Adapter". None on battery power and on Macs without a battery
+/// Power Adapter", shown inside the Battery line. None on battery power and on Macs without a
+/// battery
 pub fn get_ac_adapter() -> Option<String> {
     let battery = get_battery_service()?;
     // AdapterDetails can outlive the adapter being unplugged
@@ -1060,4 +1067,430 @@ fn get_ipv6_address_flags(interface: &str, address: &Ipv6Addr) -> Option<i32> {
     }
     // SAFETY: on success the kernel stores the address flags in the ifru_flags6 member
     Some(unsafe { request.ifr_ifru.ifru_flags6 })
+}
+
+/// ioctl that reads an interface's media type and link status: _IOWR('i', 56, struct ifmediareq)
+/// from <sys/sockio.h>, which the libc crate does not bind
+pub const SIOCGIFMEDIA: libc::c_ulong = 0xc000_0000
+    | ((size_of::<IfMediaRequest>() as libc::c_ulong & 0x1fff) << 16)
+    | ((b'i' as libc::c_ulong) << 8)
+    | 56;
+
+// <net/if_media.h>: the network type bits of a media word, 802.11's type and the link status bits
+const IFM_NMASK: libc::c_int = 0xe0;
+const IFM_IEEE80211: libc::c_int = 0x80;
+const IFM_AVALID: libc::c_int = 0x1;
+const IFM_ACTIVE: libc::c_int = 0x2;
+
+/// struct ifmediareq from <net/if.h>, which packs it to 4 bytes (44, not 48)
+#[repr(C, packed(4))]
+struct IfMediaRequest {
+    ifm_name: [libc::c_char; libc::IFNAMSIZ],
+    ifm_current: libc::c_int,
+    ifm_mask: libc::c_int,
+    ifm_status: libc::c_int,
+    ifm_active: libc::c_int,
+    ifm_count: libc::c_int,
+    ifm_ulist: *mut libc::c_int,
+}
+
+/// CoreWLAN, opened only when configd's scan record has no name: linking it would make every run
+/// pay for loading it
+const COREWLAN_PATH: &CStr = c"/System/Library/Frameworks/CoreWLAN.framework/CoreWLAN";
+/// kCWInterfaceModeStation from <CoreWLAN/CoreWLANTypes.h>, a client joined to an access point
+const CW_INTERFACE_MODE_STATION: isize = 1;
+
+// SystemConfiguration is already loaded at launch (CoreGraphics depends on it), so linking it adds
+// nothing to the startup time
+#[link(name = "SystemConfiguration", kind = "framework")]
+unsafe extern "C" {
+    /// Copies one value of configd's dynamic store (what `scutil` shows), a null store opens a
+    /// temporary session. Follows the CF Copy rule
+    fn SCDynamicStoreCopyValue(store: *const c_void, key: &CFString) -> Option<NonNull<CFType>>;
+}
+
+/// Gets what identifies the network `interface` is on (see WifiLink), None when it isn't a Wi-Fi
+/// interface associated with one
+pub fn get_wifi_link(interface: &str) -> Option<WifiLink> {
+    if !is_wifi_associated(interface) {
+        return None;
+    }
+
+    let index = get_interface_index(interface);
+    Some(WifiLink {
+        interface: interface.to_string(),
+        mac: index.and_then(get_interface_mac),
+        router: index.and_then(get_interface_router),
+    })
+}
+
+/// Checks if `interface` is a Wi-Fi interface associated with a network, from its media status
+/// (what `ifconfig` prints as "status: active"). One ioctl, where CoreWLAN takes milliseconds
+pub fn is_wifi_associated(interface: &str) -> bool {
+    get_interface_media(interface)
+        .is_some_and(|(active, status)| is_associated_wifi_media(active, status))
+}
+
+/// Checks SIOCGIFMEDIA's active media word and status for an 802.11 link that is up. AWDL and the
+/// low latency WLAN interface are 802.11 too, but have no IPv4 address so are never asked about
+pub fn is_associated_wifi_media(active: i32, status: i32) -> bool {
+    let link_up = IFM_AVALID | IFM_ACTIVE;
+    active & IFM_NMASK == IFM_IEEE80211 && status & link_up == link_up
+}
+
+/// Reads an interface's (active media word, status) with the SIOCGIFMEDIA ioctl
+fn get_interface_media(interface: &str) -> Option<(i32, i32)> {
+    let name = interface.as_bytes();
+    // The name must fit in ifm_name with its NUL terminator
+    if name.len() >= libc::IFNAMSIZ {
+        return None;
+    }
+
+    // SAFETY: plain socket(2) call, the descriptor is handed to OwnedFd right away so it is closed
+    // on every return path
+    let raw_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if raw_fd < 0 {
+        return None;
+    }
+    // SAFETY: raw_fd is a freshly opened descriptor nothing else owns
+    let socket = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+
+    // SAFETY: IfMediaRequest is a plain C struct of integers, a char array and a pointer, all
+    // zeroes is a valid value. A null ifm_ulist with ifm_count 0 asks for no media list
+    let mut request: IfMediaRequest = unsafe { std::mem::zeroed() };
+    for (dst, src) in request.ifm_name.iter_mut().zip(name) {
+        *dst = *src as libc::c_char;
+    }
+
+    // SAFETY: SIOCGIFMEDIA reads and writes exactly one ifmediareq, which `request` is
+    if unsafe { libc::ioctl(socket.as_raw_fd(), SIOCGIFMEDIA, &raw mut request) } != 0 {
+        return None;
+    }
+    Some((request.ifm_active, request.ifm_status))
+}
+
+/// Gets an interface's index, the one routing messages refer to it by
+fn get_interface_index(interface: &str) -> Option<u16> {
+    let name = CString::new(interface).ok()?;
+    // SAFETY: name is NUL terminated, if_nametoindex returns 0 for an unknown interface
+    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    u16::try_from(index).ok().filter(|&index| index != 0)
+}
+
+/// Gets an interface's MAC address from the RTM_IFINFO message NET_RT_IFLIST returns for it, its
+/// sockaddr_dl follows the if_msghdr
+fn get_interface_mac(index: u16) -> Option<[u8; 6]> {
+    let mib = [
+        libc::CTL_NET,
+        libc::PF_ROUTE,
+        0,
+        libc::AF_LINK,
+        libc::NET_RT_IFLIST,
+        libc::c_int::from(index),
+    ];
+    let list = read_route_sysctl(mib)?;
+
+    let header_len = size_of::<libc::if_msghdr>();
+    if list.len() < header_len {
+        return None;
+    }
+    // SAFETY: the list holds at least header_len bytes, read_unaligned has no alignment needs
+    let header = unsafe { std::ptr::read_unaligned(list.as_ptr().cast::<libc::if_msghdr>()) };
+    if libc::c_int::from(header.ifm_type) != libc::RTM_IFINFO
+        || header.ifm_addrs & libc::RTA_IFP == 0
+    {
+        return None;
+    }
+    mac_from_sockaddr_dl(list.get(header_len .. usize::from(header.ifm_msglen))?)
+}
+
+/// Gets the router of the interface with this index as (IPv4 address, MAC address): the gateway
+/// of its default route, then that gateway's ARP entry. NET_RT_FLAGS lists only the routes with
+/// the flag asked for (what `arp -a` reads), so a VPN pushing thousands of routes costs nothing
+fn get_interface_router(index: u16) -> Option<(Ipv4Addr, [u8; 6])> {
+    let routes_with = |flag| {
+        let mib = [
+            libc::CTL_NET,
+            libc::PF_ROUTE,
+            0,
+            libc::AF_INET,
+            libc::NET_RT_FLAGS,
+            flag,
+        ];
+        read_route_sysctl(mib)
+    };
+    let router = find_default_gateway(&routes_with(libc::RTF_GATEWAY)?, index)?;
+    let mac = find_arp_entry(&routes_with(libc::RTF_LLINFO)?, index, router)?;
+    Some((router, mac))
+}
+
+/// Reads one of the routing table sysctls (NET_RT_FLAGS, NET_RT_IFLIST) into a buffer, asking for
+/// its size first. The table can grow in between, so a buffer that ends up too small (ENOMEM) is
+/// tried again
+fn read_route_sysctl(mut mib: [libc::c_int; 6]) -> Option<Vec<u8>> {
+    for _ in 0 .. 3 {
+        let mut size: libc::size_t = 0;
+        // SAFETY: mib holds 6 valid ints, a null buffer asks the kernel only for the needed size
+        let status = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                6,
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+
+        // Room for a few routes (an ARP entry...) added before the second call
+        size += 1024;
+        let mut buffer = vec![0u8; size];
+        // SAFETY: buffer is valid for writes of size bytes and the kernel updates size to how many
+        // it actually wrote, which is never more than what we passed
+        let status = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                6,
+                buffer.as_mut_ptr().cast::<c_void>(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status == 0 {
+            buffer.truncate(size);
+            return Some(buffer);
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOMEM) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Lists the IPv4 routes through the interface with this index in a routing table dump as (flags,
+/// destination, netmask, gateway)
+fn interface_routes(
+    dump: &[u8],
+    index: u16,
+) -> impl Iterator<Item = (libc::c_int, Ipv4Addr, &[u8], &[u8])> {
+    route_messages(dump)
+        .filter(move |(header, _)| header.rtm_index == index)
+        .filter_map(|(header, addresses)| {
+            let sockaddr = |wanted| find_route_sockaddr(header.rtm_addrs, addresses, wanted);
+            let destination = sockaddr_in_address(sockaddr(libc::RTA_DST)?)?;
+            // A missing or empty netmask is /0
+            let netmask = sockaddr(libc::RTA_NETMASK).unwrap_or_default();
+            Some((header.rtm_flags, destination, netmask, sockaddr(libc::RTA_GATEWAY)?))
+        })
+}
+
+/// Finds the gateway of an interface's default route in a dump of the IPv4 routes (the RTF_GATEWAY
+/// ones or all of them). macOS keeps a default route scoped to every interface that has a router,
+/// so this also works for Wi-Fi while Ethernet carries the main default route
+pub fn find_default_gateway(dump: &[u8], index: u16) -> Option<Ipv4Addr> {
+    interface_routes(dump, index).find_map(|(flags, destination, netmask, gateway)| {
+        // VPNs' 0.0.0.0/1 halves start at 0.0.0.0 too, but have a netmask
+        let is_default = flags & libc::RTF_GATEWAY != 0
+            && destination.is_unspecified()
+            && netmask.iter().skip(4).all(|&byte| byte == 0);
+        is_default.then(|| sockaddr_in_address(gateway)).flatten()
+    })
+}
+
+/// Finds the MAC address of `address` in a dump of an interface's ARP (RTF_LLINFO) entries, None
+/// while it isn't resolved
+pub fn find_arp_entry(dump: &[u8], index: u16, address: Ipv4Addr) -> Option<[u8; 6]> {
+    interface_routes(dump, index).find_map(|(flags, destination, _, gateway)| {
+        let is_entry = flags & libc::RTF_LLINFO != 0 && destination == address;
+        is_entry.then(|| mac_from_sockaddr_dl(gateway)).flatten()
+    })
+}
+
+/// Splits a routing table dump into its messages as (header, the sockaddrs that follow it)
+fn route_messages(dump: &[u8]) -> impl Iterator<Item = (libc::rt_msghdr, &[u8])> {
+    let header_len = size_of::<libc::rt_msghdr>();
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        let message = dump.get(offset ..).filter(|message| message.len() >= header_len)?;
+        // SAFETY: at least header_len bytes are left, read_unaligned has no alignment needs
+        let header =
+            unsafe { std::ptr::read_unaligned(message.as_ptr().cast::<libc::rt_msghdr>()) };
+        let length = usize::from(header.rtm_msglen);
+        // A length shorter than the header would loop forever on a corrupted dump
+        if length < header_len {
+            return None;
+        }
+        offset += length;
+        Some((header, message.get(header_len .. length)?))
+    })
+}
+
+/// Reads the address out of a sockaddr_in, None for any other family
+fn sockaddr_in_address(sockaddr: &[u8]) -> Option<Ipv4Addr> {
+    let family = *sockaddr.get(offset_of!(libc::sockaddr_in, sin_family))?;
+    if family != libc::AF_INET as u8 {
+        return None;
+    }
+    let start = offset_of!(libc::sockaddr_in, sin_addr);
+    let octets: [u8; 4] = sockaddr.get(start .. start + 4)?.try_into().ok()?;
+    Some(Ipv4Addr::from(octets))
+}
+
+/// Reads the MAC address out of a sockaddr_dl, where it follows the interface name in sdl_data.
+/// None unless it is a 6 byte address (an ARP entry still being resolved has none)
+pub fn mac_from_sockaddr_dl(sockaddr: &[u8]) -> Option<[u8; 6]> {
+    let family = *sockaddr.get(offset_of!(libc::sockaddr_dl, sdl_family))?;
+    let name_len = *sockaddr.get(offset_of!(libc::sockaddr_dl, sdl_nlen))? as usize;
+    let address_len = *sockaddr.get(offset_of!(libc::sockaddr_dl, sdl_alen))? as usize;
+    if family != libc::AF_LINK as u8 || address_len != 6 {
+        return None;
+    }
+
+    let start = offset_of!(libc::sockaddr_dl, sdl_data) + name_len;
+    let mac: [u8; 6] = sockaddr.get(start .. start + 6)?.try_into().ok()?;
+    (mac != [0; 6]).then_some(mac)
+}
+
+/// Gets the name of the network a Wi-Fi interface is associated with. macOS hides it from apps
+/// without Location Services (CoreWLAN's ssid, scutil's SSID_STR, ipconfig all say nothing), the
+/// scan record configd keeps of the joined network still has it, with CoreWLAN as a fallback. A
+/// blanked name counts as none, so the next source is still asked
+pub fn read_wifi_ssid(interface: &str) -> Option<WifiSsid> {
+    exact_ssid_or(read_scan_record_ssid(interface), || read_corewlan_ssid(interface))
+}
+
+/// Gets the name from State:/Network/Interface/<interface>/AirPort in configd's dynamic store. Its
+/// SSID_STR is redacted but its CachedScanRecord, an NSKeyedArchiver archive of the scan result of
+/// the joined network, is not. ~1 ms, nearly all of it opening the configd session
+pub fn read_scan_record_ssid(interface: &str) -> Option<String> {
+    let key = CFString::from_str(&format!("State:/Network/Interface/{}/AirPort", interface));
+    // SAFETY: key is a valid CFString and a null store asks for a temporary session. The value
+    // follows the Copy rule, CFRetained takes ownership and releases it
+    let state = unsafe { CFRetained::from_raw(SCDynamicStoreCopyValue(std::ptr::null(), &key)?) };
+    let state = state.downcast::<CFDictionary>().ok()?;
+    // SAFETY: the AirPort state is keyed by CFStrings, values are type-checked by downcast
+    let state = unsafe { state.cast_unchecked::<CFString, CFType>() };
+    let record = state
+        .get(&CFString::from_static_str("CachedScanRecord"))?
+        .downcast::<CFData>()
+        .ok()?;
+    unarchive_scan_record_ssid(&record)
+}
+
+/// Decodes a CachedScanRecord with NSKeyedUnarchiver (Foundation is already loaded through
+/// CoreGraphics) and reads its SSID_STR. Secure decoding lets only the property list classes a
+/// scan record is made of through
+fn unarchive_scan_record_ssid(record: &CFData) -> Option<String> {
+    let class_names = [
+        c"NSDictionary",
+        c"NSArray",
+        c"NSString",
+        c"NSData",
+        c"NSNumber",
+    ];
+    let allowed: Vec<*const AnyObject> = class_names
+        .into_iter()
+        .map(|name| AnyClass::get(name).map(|class| (class as *const AnyClass).cast()))
+        .collect::<Option<_>>()?;
+    let set_class = AnyClass::get(c"NSSet")?;
+    let unarchiver = AnyClass::get(c"NSKeyedUnarchiver")?;
+    let dictionary_class = AnyClass::get(c"NSDictionary")?;
+
+    autoreleasepool(|_| {
+        // SAFETY: setWithObjects:count: copies `count` object pointers out of the array, classes
+        // are objects too
+        let allowed: Option<Retained<AnyObject>> =
+            unsafe { msg_send![set_class, setWithObjects: allowed.as_ptr(), count: allowed.len()] };
+        let data: &AnyObject = (**record).as_ref();
+        let no_error: *mut *mut AnyObject = std::ptr::null_mut();
+        // SAFETY: CFData is toll-free bridged to NSData and the error pointer may be null. A record
+        // that doesn't decode, or holds a class that isn't allowed, returns nil
+        let decoded: Option<Retained<AnyObject>> = unsafe {
+            msg_send![
+                unarchiver,
+                unarchivedObjectOfClasses: &*allowed?,
+                fromData: data,
+                error: no_error
+            ]
+        };
+        let decoded = decoded?;
+
+        // SAFETY: isKindOfClass: is NSObject's and takes a class
+        let is_dictionary: bool = unsafe { msg_send![&*decoded, isKindOfClass: dictionary_class] };
+        if !is_dictionary {
+            return None;
+        }
+        let key = CFString::from_static_str("SSID_STR");
+        let key: &AnyObject = (**key).as_ref();
+        // SAFETY: decoded is an NSDictionary, objectForKey: takes any object and may return nil
+        let ssid: Option<Retained<AnyObject>> = unsafe { msg_send![&*decoded, objectForKey: key] };
+        ssid.as_deref().and_then(ns_string_to_string)
+    })
+}
+
+/// Gets the name through CoreWLAN, opened with dlopen. Its ssid is only set when the terminal
+/// running rustfetch has Location Services access, otherwise the first known network is taken like
+/// fastfetch does, as a guess: CoreWLAN sorts them by when they were last connected to, which can
+/// lag behind an automatic join, so right after moving between two known networks it can name the
+/// previous one (wifi.rs reads a guess again after GUESSED_SSID_TTL). ~18 ms, mostly loading the
+/// configuration with every known network
+pub fn read_corewlan_ssid(interface: &str) -> Option<WifiSsid> {
+    // SAFETY: the path is a NUL terminated constant. The handle is never closed, the classes it
+    // registers have to stay loaded for the rest of the process anyway
+    let handle = unsafe { libc::dlopen(COREWLAN_PATH.as_ptr(), libc::RTLD_LAZY) };
+    if handle.is_null() {
+        return None;
+    }
+    let client_class = AnyClass::get(c"CWWiFiClient")?;
+
+    autoreleasepool(|_| {
+        let name = CFString::from_str(interface);
+        let name: &AnyObject = (**name).as_ref();
+        // SAFETY: sharedWiFiClient and interfaceWithName: (which takes an NSString, CFString is
+        // toll-free bridged to it) are public CoreWLAN API, both may return nil
+        let client: Option<Retained<AnyObject>> =
+            unsafe { msg_send![client_class, sharedWiFiClient] };
+        let wlan: Option<Retained<AnyObject>> =
+            unsafe { msg_send![&*client?, interfaceWithName: name] };
+        let wlan = wlan?;
+
+        // SAFETY: CWInterface's ssid returns an NSString or nil
+        let ssid: Option<Retained<AnyObject>> = unsafe { msg_send![&*wlan, ssid] };
+        exact_ssid_or(ssid.as_deref().and_then(ns_string_to_string), || {
+            // The known networks are the same for every interface (awdl0 would get them too), so
+            // they only stand for the joined one on an interface in station (client) mode
+            // SAFETY: interfaceMode returns a CWInterfaceMode, an NSInteger
+            let mode: isize = unsafe { msg_send![&*wlan, interfaceMode] };
+            if mode != CW_INTERFACE_MODE_STATION {
+                return None;
+            }
+            // SAFETY: configuration, networkProfiles (an NSOrderedSet), firstObject and the
+            // profile's ssid are public CoreWLAN and Foundation API, each may return nil
+            let configuration: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*wlan, configuration] };
+            let profiles: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*configuration?, networkProfiles] };
+            let profile: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*profiles?, firstObject] };
+            let ssid: Option<Retained<AnyObject>> = unsafe { msg_send![&*profile?, ssid] };
+            let name = sanitize_ssid(&ns_string_to_string(&*ssid?)?)?;
+            Some(WifiSsid {
+                name,
+                guessed: true,
+            })
+        })
+    })
+}
+
+/// Copies an NSString into a String, None if the object is something else
+fn ns_string_to_string(object: &AnyObject) -> Option<String> {
+    let string_class = AnyClass::get(c"NSString")?;
+    // SAFETY: isKindOfClass: is NSObject's and takes a class
+    let is_string: bool = unsafe { msg_send![object, isKindOfClass: string_class] };
+    // SAFETY: NSString is toll-free bridged to CFString, so an NSString is a valid CFString
+    is_string.then(|| unsafe { &*(object as *const AnyObject).cast::<CFString>() }.to_string())
 }

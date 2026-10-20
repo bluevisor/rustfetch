@@ -4,14 +4,17 @@ use std::{
     collections::BTreeMap,
     fs::{self, File},
     io::Read,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
-use crate::{common::read_file_at, platform};
+use crate::{
+    common::{read_cache_file, read_file_at, write_cache_file},
+    platform,
+};
 
 /// Shells we stop at while walking up the process tree, anything in between (sudo, script, make,
 /// python, a terminal multiplexer...) is skipped
@@ -144,7 +147,8 @@ pub fn get_shell_version(name: &str, exe_path: Option<&str>) -> Option<String> {
     // answer is remembered for as long as the executable keeps its size and modification time
     let stamp = get_executable_stamp(exe_path);
     let cache_path = get_shell_cache_path();
-    let mut cache = cache_path.as_deref().map(read_shell_cache).unwrap_or_default();
+    let mut cache: ShellVersionCache =
+        cache_path.as_deref().map(read_cache_file).unwrap_or_default();
     if let Some(stamp) = stamp
         && let Some(version) = cache.lookup(exe_path, name, stamp)
     {
@@ -158,7 +162,7 @@ pub fn get_shell_version(name: &str, exe_path: Option<&str>) -> Option<String> {
 
     if let (Some(path), Some(stamp)) = (cache_path, stamp) {
         cache.insert(exe_path, name, stamp, version.clone());
-        write_shell_cache(&path, &cache);
+        write_cache_file(&path, &cache);
     }
     version
 }
@@ -422,31 +426,6 @@ fn get_executable_stamp(exe_path: &str) -> Option<(u64, u64)> {
 /// ~/Library/Caches/rustfetch/shell.toml on macOS), None when there is no cache directory
 fn get_shell_cache_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|path| path.join("rustfetch/shell.toml"))
-}
-
-/// Reads the shell version cache, a missing or unreadable file is an empty cache
-fn read_shell_cache(path: &Path) -> ShellVersionCache {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| toml::from_str(&content).ok())
-        .unwrap_or_default()
-}
-
-/// Writes the shell version cache. It is written to a temporary file that then replaces the cache,
-/// so a rustfetch started at the same time (several terminal panes opening) never reads half of
-/// it. Failures are ignored, the version is just looked up again next time
-fn write_shell_cache(path: &Path, cache: &ShellVersionCache) {
-    let Ok(content) = toml::to_string(cache) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    let temporary = path.with_extension(format!("toml.{}", std::process::id()));
-    if fs::write(&temporary, content).is_ok() && fs::rename(&temporary, path).is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
 }
 
 /// Deletes the shell version cache, for --clear-cache

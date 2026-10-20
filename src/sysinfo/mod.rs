@@ -11,3 +11,6 @@ pub use network::*;
 
 mod tailscale;
 pub use tailscale::*;
+
+mod wifi;
+pub use wifi::*;

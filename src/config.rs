@@ -57,6 +57,9 @@ pub struct DisplayConfig {
     pub ipv4: bool,
     #[serde(default = "default_true")]
     pub ipv6: bool,
+    // The Wi-Fi network's name (macOS only)
+    #[serde(default = "default_true")]
+    pub wifi: bool,
     #[serde(default = "default_true")]
     pub tailscale_ip: bool,
     // Was tailscale_host until the line started showing only the machine name. The old key is its
@@ -66,7 +69,7 @@ pub struct DisplayConfig {
     #[serde(default, skip_serializing)]
     pub tailscale_host: Option<bool>,
     pub battery: bool,
-    // The connected power adapter (macOS only)
+    // Names the connected power adapter inside the Battery line's brackets (macOS only)
     #[serde(default = "default_true")]
     pub ac_adapter: bool,
     pub power_draw: bool,
@@ -93,6 +96,7 @@ impl Default for DisplayConfig {
             usage_bars: true,
             ipv4: true,
             ipv6: true,
+            wifi: true,
             tailscale_ip: true,
             tailscale_name: Some(true),
             tailscale_host: None,
@@ -167,6 +171,10 @@ usage_bars = true
 ipv4 = true
 # Display its global IPv6 address, hidden on IPv4-only networks
 ipv6 = true
+# Display the name of the Wi-Fi network this Mac is connected to, hidden when not on Wi-Fi or on
+# an IPv6-only network (macOS only). It is read once per network and remembered in the cache
+# directory, --clear-cache forgets it (e.g. after renaming a network)
+wifi = true
 # Display this machine's Tailscale IPv4 address, hidden when Tailscale is not connected
 tailscale_ip = true
 # Display its Tailscale machine name, the first part of its MagicDNS name (laptop for
@@ -180,7 +188,9 @@ tailscale_name = true
 # --------------------------------------
 # Display battery information
 battery = true
-# Display the connected power adapter, e.g. "140W USB-C Power Adapter" (macOS only)
+# Name the power adapter inside the battery line while one is plugged in, e.g. "Battery: 80%
+# (140W USB-C Power Adapter)" or "Battery: 64% (Charging, 140W USB-C Power Adapter)", false
+# leaves just the status, e.g. "(AC Connected)" (macOS only)
 ac_adapter = true
 # Display power draw (Linux only)
 power_draw = false
@@ -301,6 +311,7 @@ pub fn load_all_config(cli: &Cli) -> Config {
             usage_bars: style.display.usage_bars,
             ipv4: true,
             ipv6: true,
+            wifi: true,
             tailscale_ip: true,
             tailscale_name: Some(true),
             tailscale_host: None,

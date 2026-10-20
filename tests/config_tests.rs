@@ -35,7 +35,8 @@ fn test_old_config_gets_new_lines() {
         && display.tailscale_ip
         && display.show_tailscale_name()
         && display.usage_bars
-        && display.ac_adapter));
+        && display.ac_adapter
+        && display.wifi));
 }
 
 #[test]
@@ -88,7 +89,7 @@ fn test_partial_logo_table_keeps_display() {
 fn test_new_toggles_can_be_turned_off() {
     let new_keys = "shell = false\nipv4 = false\nipv6 = false\ntailscale_ip = false\n";
     let newer_keys = "tailscale_name = false\nusage_bars = false\nac_adapter = false\n";
-    let content = format!("{}{}{}", OLD_DISPLAY_SECTION, new_keys, newer_keys);
+    let content = format!("{}{}{}wifi = false\n", OLD_DISPLAY_SECTION, new_keys, newer_keys);
     let config: Option<Config> = toml::from_str(&content).ok();
     let display = config.map(|config| config.display);
 
@@ -98,7 +99,8 @@ fn test_new_toggles_can_be_turned_off() {
         && !display.tailscale_ip
         && !display.show_tailscale_name()
         && !display.usage_bars
-        && !display.ac_adapter));
+        && !display.ac_adapter
+        && !display.wifi));
 }
 
 #[test]
@@ -118,6 +120,7 @@ fn test_all_keeps_usage_bar_style() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::remove_file(&path)?;
 
     assert!(!config.display.usage_bars && config.display.kernel && config.display.ac_adapter);
+    assert!(config.display.wifi);
     assert_eq!(config.logo.color, "red");
     Ok(())
 }

@@ -167,9 +167,9 @@ fn get_default_route_ipv6() -> Option<&'static str> {
 }
 
 /// Gets the addresses of every interface that is up and running, read once per process since
-/// getifaddrs is the expensive part (~150 us with musl) and the IPv4, IPv6 and Tailscale lines
-/// all need it
-fn get_interface_addresses() -> &'static [InterfaceAddress] {
+/// getifaddrs is the expensive part (~150 us with musl) and the IPv4, IPv6, Wi-Fi and Tailscale
+/// lines all need it
+pub(crate) fn get_interface_addresses() -> &'static [InterfaceAddress] {
     static ADDRESSES: OnceLock<Vec<InterfaceAddress>> = OnceLock::new();
     ADDRESSES.get_or_init(read_interface_addresses)
 }

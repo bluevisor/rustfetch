@@ -26,14 +26,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         load_config(&cli)
     };
     let sys = sysinfo::create_system(&config);
-    // The GPU cache (Linux) is rebuilt where it is read, the shell version cache is just dropped
+    // The GPU cache (Linux) is rebuilt where it is read, the shell version and Wi-Fi name caches
+    // are just dropped
     if cli.clear_cache {
         sysinfo::clear_shell_version_cache();
+        sysinfo::clear_wifi_ssid_cache();
     }
 
     let distro_id = platform::get_distro_id();
 
-    // Same order as fastfetch: system, shell, displays, hardware, network, then power
+    // Roughly fastfetch's order (system, shell, displays, hardware, network, then power), with Swap
+    // after Disk rather than RAM and the power adapter inside the Battery line
     let info_lines: Vec<String> = config
         .display
         .identifier
@@ -59,15 +62,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config.display.cpu.then(|| common::display_cpu(&sys, &config)),
                 config.display.gpu.then(|| common::display_gpu_name(&cli)).flatten(),
                 config.display.ram.then(|| common::display_ram_usage(&sys, &config)),
-                config.display.swap.then(|| common::display_swap_usage(&sys)),
                 config.display.disk.then(|| common::display_disk_usage(&config)),
+                config.display.swap.then(|| common::display_swap_usage(&sys)),
                 config.display.ipv4.then(common::display_local_ipv4).flatten(),
                 config.display.ipv6.then(common::display_local_ipv6).flatten(),
+                config.display.wifi.then(common::display_wifi).flatten(),
                 config.display.tailscale_ip.then(common::display_tailscale_ip).flatten(),
                 config.display.show_tailscale_name().then(common::display_tailscale_name).flatten(),
-                config.display.battery.then(common::display_battery).flatten(),
-                #[cfg(target_os = "macos")]
-                config.display.ac_adapter.then(common::display_ac_adapter).flatten(),
+                config.display.battery.then(|| common::display_battery(&config)).flatten(),
                 #[cfg(target_os = "linux")]
                 config.display.power_draw.then(common::display_power_draw).flatten(),
             ]

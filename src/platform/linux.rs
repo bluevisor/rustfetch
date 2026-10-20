@@ -39,6 +39,11 @@ pub fn get_battery() -> (String, String) {
     (capacity, status)
 }
 
+/// The power_supply class doesn't name the adapter, so the Battery line only shows the status
+pub fn get_ac_adapter() -> Option<String> {
+    None
+}
+
 /// Gets current power draw and returns it as Watts - Only available on battery-powered devices
 pub fn get_power_draw() -> u32 {
     match get_trimmed(Path::new(BATTERY_POWER_DRAW_DIR)) {
@@ -331,4 +336,15 @@ pub fn get_ipv6_address_state(interface: &str, address: &Ipv6Addr) -> Ipv6Addres
         .and_then(|content| parse_if_inet6_flags(&content, interface, address))
         .map(ipv6_state_from_linux_flags)
         .unwrap_or(Ipv6AddressState::Stable)
+}
+
+/// Wi-Fi is only read on macOS for now, so no interface counts as associated and the Wi-Fi line
+/// stays hidden
+pub fn get_wifi_link(_interface: &str) -> Option<WifiLink> {
+    None
+}
+
+/// See get_wifi_link, never called on Linux
+pub fn read_wifi_ssid(_interface: &str) -> Option<WifiSsid> {
+    None
 }

@@ -16,11 +16,14 @@ serde = { version = "1.0.228", features = ["derive"] }
 sysinfo = "0.37.2"
 toml = "0.9.12"
 
-# Already in Cargo.lock through sysinfo and display-info, used directly for IOKit (GPU, battery)
-# and CoreGraphics (screens)
+# Already in Cargo.lock through sysinfo and display-info, used directly for IOKit (GPU, battery),
+# CoreGraphics (screens) and the Objective-C runtime (the Wi-Fi name, through Foundation and a
+# CoreWLAN that is only opened when needed). objc2 links Foundation, CoreGraphics loads it anyway
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.3", default-features = false, features = ["std"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
+    "objc2",
     "CFBase",
     "CFData",
     "CFDictionary",

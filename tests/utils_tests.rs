@@ -226,3 +226,35 @@ fn test_render_bar_keeps_its_width() {
     }
     assert_eq!(render_bar(64, 0), (String::new(), String::new()));
 }
+
+// format_battery_status tests
+
+const ADAPTER: &str = "140W USB-C Power Adapter";
+
+#[test]
+fn test_battery_status_with_adapter() {
+    // "AC Connected" only says an adapter is plugged in, so the adapter takes its place
+    assert_eq!(format_battery_status("AC Connected", Some(ADAPTER)), ADAPTER);
+    assert_eq!(
+        format_battery_status("Charging", Some(ADAPTER)),
+        "Charging, 140W USB-C Power Adapter"
+    );
+    assert_eq!(format_battery_status("Full", Some(ADAPTER)), "Full, 140W USB-C Power Adapter");
+}
+
+#[test]
+fn test_battery_status_without_adapter() {
+    // unplugged, ac_adapter = false, or a Mac that reports no adapter details
+    assert_eq!(format_battery_status("Discharging", None), "Discharging");
+    assert_eq!(format_battery_status("AC Connected", None), "AC Connected");
+    assert_eq!(format_battery_status("Charging", None), "Charging");
+    // Linux's power_supply statuses go through unchanged
+    assert_eq!(format_battery_status("Not charging", None), "Not charging");
+}
+
+#[test]
+fn test_battery_status_ignores_stale_or_empty_adapter() {
+    // AdapterDetails can outlive the adapter being unplugged
+    assert_eq!(format_battery_status("Discharging", Some(ADAPTER)), "Discharging");
+    assert_eq!(format_battery_status("AC Connected", Some("")), "AC Connected");
+}

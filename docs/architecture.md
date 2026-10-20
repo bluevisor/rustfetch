@@ -26,7 +26,8 @@ src/
     ├── <a href="#sharedrs">shared.rs</a>   # Generic sysinfo functions
     ├── <a href="#shellrs">shell.rs</a>    # Shell detection and its version cache
     ├── <a href="#networkrs">network.rs</a>  # Local IPv4/IPv6 and Tailscale addresses
-    └── <a href="#tailscalers">tailscale.rs</a> # Tailscale detection and MagicDNS lookup
+    ├── <a href="#tailscalers">tailscale.rs</a> # Tailscale detection and MagicDNS lookup
+    └── <a href="#wifirs">wifi.rs</a>     # Wi-Fi network name and its cache
 tests/              # Tests for "cargo test"
 ├── <a href="#utils_testsrs">utils_tests.rs</a>  # Tests specific to utils
 ├── config_tests.rs  # Old config files still parse
@@ -35,6 +36,7 @@ tests/              # Tests for "cargo test"
 ├── shell_tests.rs   # Shell name/version parsing and the version cache
 ├── network_tests.rs # Interface and address selection, /proc/net parsers
 ├── tailscale_tests.rs # Tailscale checks, PTR query, DNS reply parsing and machine names
+├── wifi_tests.rs    # Wi-Fi fingerprint, name cleanup and the name cache
 ├── macos_tests.rs   # macOS-only platform functions
 ├── linux_tests.rs   # Linux-only platform functions
 └── cache_test.rs    # GPU cache (Linux only)
@@ -64,7 +66,8 @@ Main file for configuration handling, **creates and parses a config file** or en
 - **Creates two implementations** for DisplayConfig: **Default** for initial file creation and **All** where all modules are set to true
 - **load_config()** -> returns a DisplayConfig struct from parsing the **config.toml**. If the file does not exist it will create it in the [default config directory](https://docs.rs/dirs/latest/dirs/fn.config_dir.html) and print a message.
 - **load_all_config()** -> turns every module on and keeps the `[logo]` settings and `usage_bars`, read without creating the file or printing anything.
-- Lines added after the config format was released (shell, usage_bars, ipv4, ipv6, tailscale_ip, tailscale_name, ac_adapter) and the whole `[logo]` table are **defaulted**, so older config files still parse.
+- Lines added after the config format was released (shell, usage_bars, ipv4, ipv6, wifi, tailscale_ip, tailscale_name, ac_adapter) and the whole `[logo]` table are **defaulted**, so older config files still parse.
+- `ac_adapter` doesn't add a line of its own: it names the power adapter inside the Battery line's brackets (see [display.rs](#displayrs)), so with `battery = false` there is no adapter either.
 - Renamed keys keep reading their **old name**: `tailscale_name` was `tailscale_host`, so a config that still says `tailscale_host = false` keeps the line hidden. The old key is its own `Option` field rather than a serde alias, since an alias fails with "duplicate field" (and resets every setting) on a file that has both; `show_tailscale_name()` lets the new key win.
 
 ## cli.rs
@@ -77,6 +80,8 @@ Example of a standard flag:
 Contains all functions related to showing the values returned from other files as formatted text.
 
 Also contains internal private functions such as **color_percentage()** and **format_usage()**, specific to display features. The RAM and disk lines end in a 10 cell **usage bar** (`██████▍░░░ 64%`): the bar itself is drawn by the pure `render_bar()` in [utils.rs](#utilsrs), filled with the percentage's palette color over a dim gray track. `usage_bars = false` brings back the plain `(64%)`. Without colors (`NO_COLOR`, a pipe) the bar glyphs are still printed, uncolored.
+
+The Battery line's brackets come from the pure `format_battery_status()`: while an adapter is plugged in it follows the status (`Charging, 140W USB-C Power Adapter`, `Full, 140W ...`), and it replaces the plain `AC Connected`, which only says that one is plugged in. On battery, or when the adapter can't be named (Linux, `ac_adapter = false`), the status word is left as it is.
 
 ## utils.rs
 Contains **general purpose functions** shared across multiple files, including the pure formatting helpers of the display lines (`format_screen()`, `render_bar()`...). These must undergo the highest level of [testing](#utils_testsrs) as they're used everywhere.
@@ -102,10 +107,12 @@ Note that **every function that's called from shared code must be written in bot
 Reads `/proc`, `/sys` and `/etc/os-release`, finds the `.rodata` section of ELF binaries (where shells keep their version string), lists displays through display-info and asks `/proc/net` for the default routes and IPv6 address flags.
 
 ## macos.rs
-Talks to the system directly instead of spawning tools (`system_profiler`, `ioreg` and `ifconfig` take tens of milliseconds each): **IOKit** for the GPU, battery and power adapter, **CoreGraphics** for displays (AppKit would cost ~13ms just to load), `sysctl` for CPU core types and process arguments, a **PF_ROUTE** socket for the default route, an `ioctl` for IPv6 address flags and the Mach-O `__cstring` section for shell versions.
+Talks to the system directly instead of spawning tools (`system_profiler`, `ioreg` and `ifconfig` take tens of milliseconds each): **IOKit** for the GPU, battery and power adapter, **CoreGraphics** for displays (AppKit would cost ~13ms just to load), `sysctl` for CPU core types, process arguments and the routing table, a **PF_ROUTE** socket for the default route, `ioctl`s for IPv6 address flags and Wi-Fi link status, configd's **dynamic store** for the Wi-Fi name and the Mach-O `__cstring` section for shell versions.
 
 - **Display names** come from CoreDisplay and are only read with two or more displays. CoreDisplay calls every built-in panel "Color LCD", so a built-in panel whose `CGDisplayModelNumber` is in the list of product IDs system_profiler's SPDisplaysReporter checks for `spdisplays_built-in-liquid-retina-xdr` is shown as **Liquid Retina XDR** (no IOKit or CoreDisplay property names the panel type). A panel newer than that list, and not on its plain Liquid Retina (MacBook Air) list, still counts when it runs at ProMotion's 120 Hz, read from the current mode since listing every mode costs ~3.5ms.
-- The **AppleSmartBattery** service is looked up once and shared by the Battery and AC Adapter lines. The adapter comes from its `AdapterDetails` (`Watts`, `Name`) and is hidden when `ExternalConnected` is false or no wattage is reported.
+- The **AppleSmartBattery** service is looked up once and shared by the battery status and the power adapter the Battery line names. The adapter comes from its `AdapterDetails` (`Watts`, `Name`) and is left out when `ExternalConnected` is false or no wattage is reported.
+- **Wi-Fi** needs no CoreWLAN until a new network shows up. An interface counts as associated when the `SIOCGIFMEDIA` ioctl reports an 802.11 media type with an active link (`ifconfig`'s "status: active", ~0.03ms). Its network is told apart by the interface's own MAC address (a `NET_RT_IFLIST` sysctl), the gateway of its default route and that gateway's MAC address, from two `NET_RT_FLAGS` sysctls that list only the gateway routes and the ARP entries (what `arp -a` reads), so a VPN pushing thousands of routes doesn't slow it down (~0.1ms all together, no `arp` or `scutil` spawned). See [wifi.rs](#wifirs) for how that fingerprint is cached.
+- The **Wi-Fi name** is redacted by macOS for programs without Location Services: CoreWLAN's `ssid` is nil, `scutil`'s `SSID_STR` is empty and `ipconfig getsummary` prints `<redacted>`. The `CachedScanRecord` of configd's `State:/Network/Interface/<if>/AirPort` key, an NSKeyedArchiver archive of the joined network's scan result, still holds `SSID_STR` and is decoded with Foundation's NSKeyedUnarchiver (secure decoding, plist classes only), ~1ms. When it's missing, or blanked (empty, `<redacted>`) the way macOS hides the other sources, CoreWLAN is opened with `dlopen` (linking it would cost every run dyld time) and asked through objc2: `ssid` when Location Services were granted, else the first of the interface's known networks like fastfetch does (~18ms, nearly all loading the configuration). That last one is a **guess**: CoreWLAN sorts known networks by their private `lastConnected` date, which isn't updated on every automatic join, so right after moving between two known networks it can name the previous one. It is only used on an interface in station mode, since `awdl0` lists the same known networks, and [wifi.rs](#wifirs) caches it as a guess.
 - **GPUs** are read from the IORegistry. Only integrated GPUs go untagged, discrete ones keep `[Discrete]` so dual-GPU Intel Macs can tell them apart.
 
 ## shared.rs
@@ -123,6 +130,9 @@ Reads every interface address once with `getifaddrs` and picks what the Local IP
 
 ## tailscale.rs
 Tells Tailscale's tunnel apart from other VPNs (on macOS every VPN is a `utun`, so it also needs Tailscale's fixed `fd7a:115c:a1e0::/48` address) and gets the MagicDNS name with one hand-built PTR query to `100.100.100.100`, which takes ~0.5ms where `tailscale status` takes ~30ms. The Tailscale Name line shows only the **machine name**, the first label of that MagicDNS name (`laptop` for `laptop.tailnet.ts.net`).
+
+## wifi.rs
+Picks the Wi-Fi line's interface (a physical interface with an IPv4 address that [macos.rs](#macosrs) says is associated) and gets the network's name, which costs ~1ms (and ~18ms through CoreWLAN) where everything else about the link costs ~0.1ms. So names are cached in `wifi.toml` in the cache directory, written atomically like `shell.toml` (both go through `read_cache_file()`/`write_cache_file()` in [utils.rs](#utilsrs)), under a **fingerprint** of the network: interface, its own MAC address, router IPv4 and router MAC (`en0 0a:6f:b5:20:c6:02 172.18.7.1 cc:03:d9:3a:ed:d0`). macOS gives each network its own private Wi-Fi address by default, which tells apart two networks behind the same router; with private addresses turned off, two SSIDs bridged onto one router share a fingerprint and the first one seen is shown for both. Without a fingerprint nothing is cached and the name is read every run (~1ms, ~18ms through CoreWLAN): that's without a router (no DHCP lease), and also while the router has no ARP entry (not resolved yet, or expired on an idle Mac), since a fingerprint without the router's MAC would mix up every network behind a `192.168.1.1`. A name that can't be read is never cached either, so a network neither source can name is asked about on every run. A name CoreWLAN only **guessed** is stored with `guessed = true` and trusted for 15 minutes (`GUESSED_SSID_TTL`), then read again, so an exact name replaces it as soon as one can be read and a wrong guess doesn't stick until `--clear-cache`. Only interfaces with an IPv4 address are looked at, which keeps `awdl0` (link-local IPv6 only) out but also hides the line on an IPv6-only Wi-Fi network. Up to 32 networks are kept, the one added longest ago makes room, and `--clear-cache` forgets them all (for a renamed network). Names are stripped of control characters, cached ones too since the file can be edited by hand. Linux has no Wi-Fi line yet: its platform functions return None.
 
 ## utils_tests.rs
 <a id="tests"></a>Testing file for utils functions, the other test files follow the same rules. Files named after an OS only build on that OS, everything else is pure and runs everywhere. The testing requirements are usually:
