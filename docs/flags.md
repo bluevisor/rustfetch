@@ -15,7 +15,7 @@ Options:
 ```
 
 ## --all / -a
-**Enables all features**, ignoring the current config file.
+**Enables all modules**, ignoring the `[display]` section of the config file. The `[logo]` settings (`name`, `color`) still apply.
 
 Very useful to try features out.
 

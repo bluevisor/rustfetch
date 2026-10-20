@@ -1,5 +1,6 @@
 //! Test that config files written before new display toggles existed still parse
 
+use clap::Parser;
 use rustfetch::{
     cli::Cli,
     config::{Config, load_all_config},
@@ -130,16 +131,72 @@ fn test_key_color_that_isnt_text_keeps_the_rest() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn test_old_logo_table_gets_auto_name() {
+    // A [logo] table written before `name` existed still parses, keeps its color and draws the
+    // distro's own logo
+    let content = format!("{}\n[logo]\ncolor = \"#ff8800\"\n", OLD_DISPLAY_SECTION);
+    let config: Option<Config> = toml::from_str(&content).ok();
+    let logo = config.map(|config| (config.logo.name, config.logo.color));
+    assert_eq!(logo, Some((String::from("auto"), String::from("#ff8800"))));
+}
+
+#[test]
+fn test_logo_name_is_read() {
+    let content = format!("{}\n[logo]\nname = \"seen\"\ncolor = \"red\"\n", OLD_DISPLAY_SECTION);
+    let config: Option<Config> = toml::from_str(&content).ok();
+    let logo = config.map(|config| (config.logo.name, config.logo.color));
+    assert_eq!(logo, Some((String::from("seen"), String::from("red"))));
+}
+
+#[test]
 fn test_partial_logo_table_keeps_display() {
-    // An empty [logo] table, or a misspelled key in it, only resets the logo color: the [display]
-    // toggles still apply instead of the whole file falling back to the defaults
+    // An empty [logo] table, or a misspelled key in it, only resets the logo name and color: the
+    // [display] toggles still apply instead of the whole file falling back to the defaults
     let without_kernel = OLD_DISPLAY_SECTION.replace("kernel = true", "kernel = false");
     for logo in ["[logo]\n", "[logo]\ncolour = \"red\"\n"] {
         let content = format!("{}\n{}", without_kernel, logo);
         let config: Option<Config> = toml::from_str(&content).ok();
         assert!(config.as_ref().is_some_and(|config| !config.display.kernel), "{}", logo);
-        assert_eq!(config.map(|config| config.logo.color), Some(String::from("default")));
+        let logo_settings = config.map(|config| (config.logo.name, config.logo.color));
+        assert_eq!(logo_settings, Some((String::from("auto"), String::from("default"))));
     }
+}
+
+#[test]
+fn test_wrong_logo_types_keep_the_rest() {
+    // A [logo] value that isn't a string falls back to its default on its own, the other [logo] key
+    // and the [display] toggles still apply
+    let without_kernel = OLD_DISPLAY_SECTION.replace("kernel = true", "kernel = false");
+    let cases = [
+        ("name = true\ncolor = \"red\"", "auto", "red"),
+        ("name = 5\ncolor = \"red\"", "auto", "red"),
+        ("name = \"seen\"\ncolor = 5", "seen", "default"),
+        ("name = [\"seen\"]\ncolor = { r = 1 }", "auto", "default"),
+    ];
+    for (logo, name, color) in cases {
+        let content = format!("{}\n[logo]\n{}\n", without_kernel, logo);
+        let config: Option<Config> = toml::from_str(&content).ok();
+        assert!(config.as_ref().is_some_and(|config| !config.display.kernel), "{}", logo);
+        let logo_settings = config.map(|config| (config.logo.name, config.logo.color));
+        assert_eq!(logo_settings, Some((String::from(name), String::from(color))), "{}", logo);
+    }
+}
+
+#[test]
+fn test_all_flag_keeps_logo_settings() {
+    // -a turns every module on but still draws the logo [logo] picks
+    let path = std::env::temp_dir().join(format!("rustfetch_all_{}.toml", std::process::id()));
+    let content = format!("{}\n[logo]\nname = \"seen\"\ncolor = \"red\"\n", OLD_DISPLAY_SECTION);
+    assert!(std::fs::write(&path, content).is_ok());
+
+    let path_text = path.to_string_lossy().into_owned();
+    let cli = Cli::parse_from(["rustfetch", "-a", "-c", path_text.as_str()]);
+    let config = load_all_config(&cli);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(config.display.cpu_frequency && config.display.power_draw);
+    assert_eq!(config.logo.name, "seen");
+    assert_eq!(config.logo.color, "red");
 }
 
 #[test]

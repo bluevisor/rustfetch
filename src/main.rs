@@ -11,7 +11,7 @@ use clap::Parser;
 
 use crate::{
     cli::Cli,
-    common::{get_logo_lines, parse_key_color, parse_logo_color, print_logo},
+    common::{get_logo_lines, parse_key_color, parse_logo_color, parse_logo_name, print_logo},
     config::{load_all_config, load_config},
 };
 
@@ -34,8 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let distro_id = platform::get_distro_id();
-    // The logo drawn is the distro's own, the same id picks the "auto" key color
-    let logo_id = distro_id.as_str();
+    // The distro's own logo, or the one [logo] name picks. The same id picks the "auto" key color
+    let logo_id = parse_logo_name(&config.logo.name).logo_id(&distro_id);
     let logo_color = parse_logo_color(&config.logo.color);
     // Every key shares one color, worked out from the logo before the first line is formatted
     let key_color = parse_key_color(&config.display.key_color).resolve(logo_id, logo_color);

@@ -17,17 +17,24 @@ pub struct Config {
     pub logo: LogoConfig,
 }
 
-// Defaulted field by field too, so an empty or misspelled [logo] table doesn't throw the [display]
-// settings away along with it
+// Defaulted field by field too, and a value of the wrong type is read as the default, so an empty
+// or misspelled [logo] table doesn't throw the [display] settings away along with it
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LogoConfig {
+    // "auto" (the distro's logo) or "seen", files written before it existed get "auto"
+    #[serde(deserialize_with = "deserialize_logo_name")]
+    pub name: String,
+    #[serde(deserialize_with = "deserialize_logo_color")]
     pub color: String,
 }
 
 impl Default for LogoConfig {
     fn default() -> Self {
-        Self { color: String::from("default") }
+        Self {
+            name: String::from("auto"),
+            color: String::from("default"),
+        }
     }
 }
 
@@ -144,6 +151,34 @@ where
     })
 }
 
+/// Reads a [logo] value as text. A value that isn't a string (`name = true`, `color = 5`) gives
+/// None instead of an error, which would make the whole config file fall back to the defaults
+fn deserialize_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value.as_str().map(String::from))
+}
+
+/// serde reader for [logo] name, a value that isn't a string falls back to "auto" like an unknown
+/// name does
+fn deserialize_logo_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(deserialize_text(deserializer)?.unwrap_or_else(|| LogoConfig::default().name))
+}
+
+/// serde reader for [logo] color, a value that isn't a string falls back to "default" like an
+/// unknown color does
+fn deserialize_logo_color<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(deserialize_text(deserializer)?.unwrap_or_else(|| LogoConfig::default().color))
+}
+
 fn get_config_template() -> String {
     r##"# Rustfetch config file
 
@@ -192,9 +227,10 @@ usage_bars = true
 # KEY COLOR
 # ---------
 # Color of the text before each line's colon ("OS", "Disk (/)"). "auto" follows the logo: the
-# [logo] color when it is a solid one, otherwise yellow next to the Apple logo (like fastfetch)
-# and the distro's own color on Linux. "none" (or false) keeps plain bold keys, anything else is
-# a name (red, bright blue, ...) or a hex code such as "#ff8800". --all keeps it too
+# [logo] color when it is a solid one, otherwise yellow next to the Apple logo (like fastfetch),
+# teal next to the Seen logo and the distro's own color on Linux. "none" (or false) keeps plain
+# bold keys, anything else is a name (red, bright blue, ...) or a hex code such as "#ff8800".
+# --all keeps it too
 key_color = "auto"
 
 # NETWORK INFO
@@ -230,9 +266,12 @@ power_draw = false
 # LOGO
 # ----
 [logo]
-# "default" keeps the distro's own colors, "rainbow" draws the classic striped Apple logo (macOS
-# only), anything else draws the whole logo in one solid color: a name (white, bright white, red,
-# green, yellow, blue, magenta, cyan, bright red, ...) or a hex code such as "#ff8800"
+# "auto" draws the distro's own logo, "seen" draws the Seen Health logo
+name = "auto"
+# "default" keeps the logo's own colors, "rainbow" draws the classic striped Apple logo (macOS
+# only, the Seen logo keeps its leaf colors), anything else draws the whole logo in one solid color:
+# a name (white, bright white, red, green, yellow, blue, magenta, cyan, bright red, ...) or a hex
+# code such as "#ff8800"
 color = "default"
 "##
     .to_string()
