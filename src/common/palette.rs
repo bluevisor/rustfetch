@@ -1,5 +1,5 @@
-//! The accent colors used for the rainbow logo and the usage percentages: a muted palette on
-//! terminals that support 24-bit color, the plain ANSI colors everywhere else
+//! The accent colors used for the rainbow logo and the usage percentages: on terminals that support
+//! 24-bit color the logo stripes are saturated and the percentages muted, plain ANSI elsewhere
 
 use std::sync::OnceLock;
 
@@ -26,6 +26,20 @@ impl PaletteColor {
             PaletteColor::Red => (0xd4, 0x84, 0x7f),
             PaletteColor::Magenta => (0xae, 0x8a, 0xb8),
             PaletteColor::Blue => (0x77, 0xaf, 0xd4),
+        };
+        Color::TrueColor { r, g, b }
+    }
+
+    /// Gets the saturated 24-bit version, the stripe colors of Apple's 1977 six-color logo. Used
+    /// for the rainbow logo, where muted stripes look washed out
+    pub fn vivid(self) -> Color {
+        let (r, g, b) = match self {
+            PaletteColor::Green => (0x61, 0xbb, 0x46),
+            PaletteColor::Yellow => (0xfd, 0xb8, 0x27),
+            PaletteColor::Orange => (0xf5, 0x82, 0x1f),
+            PaletteColor::Red => (0xe0, 0x3a, 0x3e),
+            PaletteColor::Magenta => (0x96, 0x3d, 0x97),
+            PaletteColor::Blue => (0x00, 0x9d, 0xdc),
         };
         Color::TrueColor { r, g, b }
     }
@@ -64,4 +78,9 @@ pub fn supports_truecolor() -> bool {
 /// Colors text with a palette color, muted on truecolor terminals and plain ANSI elsewhere
 pub fn paint(text: &str, color: PaletteColor) -> ColoredString {
     text.color(color.resolve(supports_truecolor()))
+}
+
+/// Colors text with a palette color, saturated on truecolor terminals and plain ANSI elsewhere
+pub fn paint_vivid(text: &str, color: PaletteColor) -> ColoredString {
+    text.color(if supports_truecolor() { color.vivid() } else { color.ansi() })
 }

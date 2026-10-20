@@ -41,6 +41,16 @@ fn test_palette_truecolor_is_muted() {
 }
 
 #[test]
+fn test_palette_vivid_is_apple_1977() {
+    assert_eq!(PaletteColor::Green.vivid(), rgb(0x61, 0xbb, 0x46));
+    assert_eq!(PaletteColor::Yellow.vivid(), rgb(0xfd, 0xb8, 0x27));
+    assert_eq!(PaletteColor::Orange.vivid(), rgb(0xf5, 0x82, 0x1f));
+    assert_eq!(PaletteColor::Red.vivid(), rgb(0xe0, 0x3a, 0x3e));
+    assert_eq!(PaletteColor::Magenta.vivid(), rgb(0x96, 0x3d, 0x97));
+    assert_eq!(PaletteColor::Blue.vivid(), rgb(0x00, 0x9d, 0xdc));
+}
+
+#[test]
 fn test_palette_fallback_is_ansi() {
     assert_eq!(PaletteColor::Green.resolve(false), Color::Green);
     assert_eq!(PaletteColor::Yellow.resolve(false), Color::Yellow);

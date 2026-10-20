@@ -6,7 +6,7 @@ use colored::*;
 
 use crate::{
     cli::Cli,
-    common::{PaletteColor, paint},
+    common::{PaletteColor, paint_vivid},
 };
 
 /// Gets the lines logos in a vector and returns them
@@ -76,7 +76,7 @@ fn colorize_macos_logo_line(line: &str, line_index: usize) -> ColoredString {
         14 | 15 => PaletteColor::Magenta,
         _ => PaletteColor::Blue,
     };
-    paint(line, color)
+    paint_vivid(line, color)
 }
 
 /// Counts the terminal columns a logo line takes. Logos only use single-width characters (ASCII
