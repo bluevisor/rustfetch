@@ -229,7 +229,7 @@ fn test_render_key() {
 fn test_seen_logo_matches_leaf_map() {
     let art = get_logo_lines("seen");
     let leaves = get_seen_leaf_lines();
-    assert_eq!(art.len(), 16);
+    assert_eq!(art.len(), 17);
     assert_eq!(leaves.len(), art.len());
 
     for (row, (line, leaf_line)) in art.iter().zip(&leaves).enumerate() {
@@ -242,7 +242,7 @@ fn test_seen_logo_matches_leaf_map() {
         let known_leaves = leaf_line.chars().all(|cell| matches!(cell, ' ' | '1' ..= '3'));
         assert!(known_leaves, "line {}", row + 1);
     }
-    assert_eq!(art.iter().map(|line| get_display_width(line)).max(), Some(31));
+    assert_eq!(art.iter().map(|line| get_display_width(line)).max(), Some(32));
 }
 
 #[test]
