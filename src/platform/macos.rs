@@ -4,14 +4,15 @@ use std::{
     net::Ipv6Addr,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     ptr::NonNull,
+    sync::OnceLock,
 };
 
 use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFAllocatorDefault,
 };
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayIsMain, CGDisplayMode, CGError,
-    CGGetOnlineDisplayList,
+    CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayIsMain,
+    CGDisplayMode, CGDisplayModelNumber, CGError, CGGetOnlineDisplayList,
 };
 use objc2_io_kit::{
     IOIteratorNext, IOObjectConformsTo, IOObjectRelease, IORegistryEntryCreateCFProperty,
@@ -24,6 +25,22 @@ use crate::{cli::Cli, common::*, sysinfo::*};
 
 /// Upper bound on listed displays, far more than any Mac can drive (display-info uses 16 too)
 const MAX_DISPLAYS: usize = 16;
+
+/// The name CoreDisplay gives every built-in panel, whatever kind it is
+const BUILTIN_PANEL_NAME: &str = "Color LCD";
+/// Product IDs (CGDisplayModelNumber) of the built-in Liquid Retina XDR panels, the same list
+/// system_profiler checks before reporting "spdisplays_built-in-liquid-retina-xdr". No IOKit or
+/// CoreDisplay property names the panel type, so newer panels have to be added here
+const LIQUID_RETINA_XDR_MODELS: [u32; 14] = [
+    0xa04e, 0xa04f, 0xa050, 0xa051, 0xa057, 0xa058, 0xa059, 0xa05a, 0xa05b, 0xa05c, 0xa05d, 0xa05e,
+    0xa05f, 0xa061,
+];
+/// Product IDs of the built-in plain Liquid Retina panels (MacBook Air), system_profiler's other
+/// list. Kept out of the 120 Hz fallback so one of them never shows up as an XDR
+const LIQUID_RETINA_MODELS: [u32; 10] =
+    [0xa052, 0xa053, 0xa054, 0xa055, 0xa062, 0xa063, 0xa064, 0xa065, 0xa066, 0xa067];
+/// ProMotion's top refresh rate, only the Liquid Retina XDR MacBook Pros have it
+const PROMOTION_REFRESH_RATE: u64 = 120;
 
 /// CoreDisplay_DisplayCreateInfoDictionary is private API (fastfetch uses it too), it returns a +1
 /// retained dictionary describing the display, or null
@@ -171,13 +188,17 @@ pub fn get_active_screens() -> Option<Vec<ScreenInfo>> {
         .filter_map(|&id| {
             let mode = CGDisplayCopyDisplayMode(id)?;
             let refresh_rate = CGDisplayMode::refresh_rate(Some(&mode));
+            // Round so 59.94 Hz shows as 60Hz instead of 59Hz
+            let refresh_rate = (refresh_rate > 0.0).then(|| refresh_rate.round() as u64);
+            let name = create_info
+                .and_then(|f| get_display_name(f, id))
+                .map(|name| get_panel_name(name, id, refresh_rate));
 
             Some(ScreenInfo {
-                name: create_info.and_then(|f| get_display_name(f, id)).unwrap_or_default(),
+                name: name.unwrap_or_default(),
                 width: CGDisplayMode::pixel_width(Some(&mode)) as u64,
                 height: CGDisplayMode::pixel_height(Some(&mode)) as u64,
-                // Round so 59.94 Hz shows as 60Hz instead of 59Hz
-                refresh_rate: (refresh_rate > 0.0).then(|| refresh_rate.round() as u64),
+                refresh_rate,
                 is_primary: CGDisplayIsMain(id),
             })
         })
@@ -225,9 +246,30 @@ fn get_display_name(create_info: CreateInfoDictionaryFn, id: CGDirectDisplayID) 
     Some(name.downcast::<CFString>().ok()?.to_string())
 }
 
+/// Swaps CoreDisplay's generic "Color LCD" for "Liquid Retina XDR" on the MacBook Pros that have
+/// one, like System Settings and system_profiler do. Every other display keeps its name
+fn get_panel_name(name: String, id: CGDirectDisplayID, refresh_rate: Option<u64>) -> String {
+    if name == BUILTIN_PANEL_NAME
+        && CGDisplayIsBuiltin(id)
+        && is_liquid_retina_xdr(CGDisplayModelNumber(id), refresh_rate)
+    {
+        String::from("Liquid Retina XDR")
+    } else {
+        name
+    }
+}
+
+/// Checks if a built-in panel is a Liquid Retina XDR from its product ID, a panel newer than both
+/// known lists still counts when it runs at ProMotion's 120 Hz. The current mode is used since
+/// listing every mode to find the top rate costs ~3.5 ms
+pub fn is_liquid_retina_xdr(model: u32, refresh_rate: Option<u64>) -> bool {
+    LIQUID_RETINA_XDR_MODELS.contains(&model)
+        || (!LIQUID_RETINA_MODELS.contains(&model)
+            && refresh_rate.is_some_and(|rate| rate >= PROMOTION_REFRESH_RATE))
+}
+
 /// PCI vendor IDs as reported by the "vendor-id" property of a GPU
 const VENDOR_APPLE: u32 = 0x106b;
-const VENDOR_INTEL: u32 = 0x8086;
 const VENDOR_AMD: u32 = 0x1002;
 const VENDOR_NVIDIA: u32 = 0x10de;
 
@@ -322,7 +364,7 @@ impl Drop for IoObject {
 }
 
 /// Gets every GPU from the IORegistry (no wgpu, no system_profiler) and returns them as a single
-/// line, e.g. "Apple M5 Pro (20 cores) @ 1.62 GHz [Integrated]"
+/// line, e.g. "Apple M5 Pro (20 cores) @ 1.62 GHz"
 pub fn get_gpu_name(_cli: &Cli) -> Option<String> {
     // IOKit takes well under 1ms, so unlike Linux there's no need to go through the cache
     let gpus: Vec<String> = get_accelerators()?.iter().filter_map(get_gpu_info).collect();
@@ -432,17 +474,17 @@ pub fn parse_gpu_max_frequency(voltage_states: &[u8]) -> Option<u32> {
     (mhz > 0).then_some(mhz)
 }
 
-/// Maps a PCI vendor ID to the kind of GPU it makes for Macs
+/// Maps a PCI vendor ID to the tag shown after its GPU. Only discrete GPUs get one: integrated is
+/// all Apple Silicon has, while Intel Macs with two GPUs still need them told apart
 pub fn get_gpu_type(vendor_id: u32) -> Option<&'static str> {
     match vendor_id {
-        VENDOR_APPLE | VENDOR_INTEL => Some("Integrated"),
         VENDOR_AMD | VENDOR_NVIDIA => Some("Discrete"),
         _ => None,
     }
 }
 
-/// Formats a GPU, e.g. "Apple M5 Pro (20 cores) @ 1.62 GHz [Integrated]", missing parts are
-/// left out
+/// Formats a GPU, e.g. "Apple M5 Pro (20 cores) @ 1.62 GHz" or "AMD Radeon Pro 5500M
+/// [Discrete]", missing parts are left out
 pub fn format_gpu(
     name: &str,
     core_count: Option<u32>,
@@ -475,18 +517,29 @@ pub fn get_battery() -> (String, String) {
         .unwrap_or_else(|| (String::from("Unavailable"), String::from("Unavailable")))
 }
 
+/// Looks the AppleSmartBattery IOKit service up once, the Battery and AC Adapter lines both read
+/// it. None on desktops (Mac mini, Studio, Pro, iMac), which don't publish the service at all
+fn get_battery_service() -> Option<&'static IoObject> {
+    // Kept for the whole run, the handle is released when the process exits
+    static SERVICE: OnceLock<Option<IoObject>> = OnceLock::new();
+    SERVICE
+        .get_or_init(|| {
+            // SAFETY: the class name is a NUL terminated constant
+            let matching = unsafe { IOServiceMatching(BATTERY_SERVICE.as_ptr()) }?;
+            // SAFETY: the matching dictionary is valid, the function consumes the reference
+            // passed to it and returns a retained handle (or 0). It stays in the static for the
+            // rest of the process and is never released, on purpose
+            IoObject::new(unsafe {
+                IOServiceGetMatchingService(0, Some(CFRetained::<CFDictionary>::from(&*matching)))
+            })
+        })
+        .as_ref()
+}
+
 /// Reads capacity and status from the AppleSmartBattery IOKit service one key at a time, which is
 /// ~7x cheaper than copying its whole property table (it holds large BatteryData dictionaries)
 fn get_smart_battery() -> Option<(String, String)> {
-    // SAFETY: the class name is a NUL terminated constant
-    let matching = unsafe { IOServiceMatching(BATTERY_SERVICE.as_ptr()) }?;
-    // SAFETY: the matching dictionary is valid, the function consumes the reference passed to it
-    // and returns a retained handle (or 0) that IoObject releases
-    let battery = IoObject::new(unsafe {
-        IOServiceGetMatchingService(0, Some(CFRetained::<CFDictionary>::from(&*matching)))
-    });
-    // Desktops (Mac mini, Studio, Pro, iMac) don't publish the service at all
-    let battery = battery?;
+    let battery = get_battery_service()?;
 
     // A MacBook running with its battery removed still publishes the service
     if battery.bool_property("BatteryInstalled") == Some(false) {
@@ -535,6 +588,54 @@ pub fn battery_status(
         // Plugged in but held below 100% by the charge limit or Optimized Battery Charging
         "AC Connected"
     }
+}
+
+/// Gets the connected power adapter from AppleSmartBattery's AdapterDetails, e.g. "140W USB-C
+/// Power Adapter". None on battery power and on Macs without a battery
+pub fn get_ac_adapter() -> Option<String> {
+    let battery = get_battery_service()?;
+    // AdapterDetails can outlive the adapter being unplugged
+    if battery.bool_property("ExternalConnected") != Some(true) {
+        return None;
+    }
+
+    let details = battery.property("AdapterDetails")?.downcast::<CFDictionary>().ok()?;
+    // SAFETY: AdapterDetails is keyed by CFStrings, values are type-checked by downcast
+    let details = unsafe { details.cast_unchecked::<CFString, CFType>() };
+    let watts = details
+        .get(&CFString::from_static_str("Watts"))?
+        .downcast_ref::<CFNumber>()?
+        .as_i64()?;
+    let name = details
+        .get(&CFString::from_static_str("Name"))
+        .and_then(|name| name.downcast::<CFString>().ok())
+        .map(|name| name.to_string());
+
+    format_ac_adapter(watts, name.as_deref())
+}
+
+/// Formats a power adapter from its wattage and name, the name is left out of the brackets when
+/// it already starts with the wattage. None when no wattage is reported
+///
+/// For example: (140, "140W USB-C Power Adapter") returns "140W USB-C Power Adapter" and
+/// (96, "pd charger") returns "96W (pd charger)"
+pub fn format_ac_adapter(watts: i64, name: Option<&str>) -> Option<String> {
+    if watts <= 0 {
+        return None;
+    }
+
+    let wattage = format!("{}W", watts);
+    // The name comes from the adapter's own firmware, control characters could be escape codes
+    let name: String = name.unwrap_or_default().chars().filter(|c| !c.is_control()).collect();
+    let name = name.trim();
+
+    Some(if name.is_empty() {
+        wattage
+    } else if name.starts_with(&wattage) {
+        name.to_string()
+    } else {
+        format!("{} ({})", wattage, name)
+    })
 }
 
 /// struct proc_bsdshortinfo from <sys/proc_info.h>, which the libc crate does not bind

@@ -1,5 +1,6 @@
-//! The accent colors used for the rainbow logo and the usage percentages: on terminals that support
-//! 24-bit color the logo stripes are saturated and the percentages muted, plain ANSI elsewhere
+//! The accent colors used for the rainbow logo, the usage percentages and the usage bars: on
+//! terminals that support 24-bit color the logo stripes are saturated and the percentages muted,
+//! plain ANSI elsewhere
 
 use std::sync::OnceLock;
 
@@ -63,6 +64,15 @@ impl PaletteColor {
     }
 }
 
+/// Gets the dim gray of a usage bar's empty track, bright black (ANSI's gray) without 24-bit color
+pub fn track_color(truecolor: bool) -> Color {
+    if truecolor {
+        Color::TrueColor { r: 0x4a, g: 0x4a, b: 0x4a }
+    } else {
+        Color::BrightBlack
+    }
+}
+
 /// Checks a COLORTERM value the same way the colored crate does, which turns 24-bit colors into
 /// the closest ANSI color unless COLORTERM is exactly "truecolor" or "24bit"
 pub fn is_truecolor_value(colorterm: Option<&str>) -> bool {
@@ -83,4 +93,9 @@ pub fn paint(text: &str, color: PaletteColor) -> ColoredString {
 /// Colors text with a palette color, saturated on truecolor terminals and plain ANSI elsewhere
 pub fn paint_vivid(text: &str, color: PaletteColor) -> ColoredString {
     text.color(if supports_truecolor() { color.vivid() } else { color.ansi() })
+}
+
+/// Colors the empty track of a usage bar dim gray
+pub fn paint_track(text: &str) -> ColoredString {
+    text.color(track_color(supports_truecolor()))
 }

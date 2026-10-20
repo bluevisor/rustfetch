@@ -50,15 +50,25 @@ pub struct DisplayConfig {
     pub ram: bool,
     pub swap: bool,
     pub disk: bool,
+    // Draws a bar next to the RAM and disk percentages
+    #[serde(default = "default_true")]
+    pub usage_bars: bool,
     #[serde(default = "default_true")]
     pub ipv4: bool,
     #[serde(default = "default_true")]
     pub ipv6: bool,
     #[serde(default = "default_true")]
     pub tailscale_ip: bool,
-    #[serde(default = "default_true")]
-    pub tailscale_host: bool,
+    // Was tailscale_host until the line started showing only the machine name. The old key is its
+    // own field, a serde alias would fail on a file that has both, see show_tailscale_name()
+    #[serde(default)]
+    pub tailscale_name: Option<bool>,
+    #[serde(default, skip_serializing)]
+    pub tailscale_host: Option<bool>,
     pub battery: bool,
+    // The connected power adapter (macOS only)
+    #[serde(default = "default_true")]
+    pub ac_adapter: bool,
     pub power_draw: bool,
 }
 
@@ -80,13 +90,24 @@ impl Default for DisplayConfig {
             ram: true,
             swap: true,
             disk: true,
+            usage_bars: true,
             ipv4: true,
             ipv6: true,
             tailscale_ip: true,
-            tailscale_host: true,
+            tailscale_name: Some(true),
+            tailscale_host: None,
             battery: true,
+            ac_adapter: true,
             power_draw: false,
         }
+    }
+}
+
+impl DisplayConfig {
+    /// Checks if the Tailscale Name line is on: tailscale_name wins over the old tailscale_host
+    /// key, and with neither the line is shown like every line added after the format's release
+    pub fn show_tailscale_name(&self) -> bool {
+        self.tailscale_name.or(self.tailscale_host).unwrap_or(true)
     }
 }
 
@@ -135,6 +156,11 @@ swap = true
 # Display disk usage
 disk = true
 
+# USAGE BARS
+# ----------
+# Draw a bar before the RAM and disk percentages, false shows just "(64%)". --all keeps it too
+usage_bars = true
+
 # NETWORK INFO
 # ------------
 # Display the local IPv4 address of the interface carrying the default route
@@ -143,8 +169,10 @@ ipv4 = true
 ipv6 = true
 # Display this machine's Tailscale IPv4 address, hidden when Tailscale is not connected
 tailscale_ip = true
-# Display its Tailscale MagicDNS name, looked up from Tailscale's DNS server (100.100.100.100)
-tailscale_host = true
+# Display its Tailscale machine name, the first part of its MagicDNS name (laptop for
+# laptop.tailnet.ts.net) looked up from Tailscale's DNS server (100.100.100.100). Replaces the
+# old tailscale_host key, which still works and loses to this one when both are set
+tailscale_name = true
 
 # LAPTOP-RELATED INFO
 # If the device is not a laptop, turning
@@ -152,6 +180,8 @@ tailscale_host = true
 # --------------------------------------
 # Display battery information
 battery = true
+# Display the connected power adapter, e.g. "140W USB-C Power Adapter" (macOS only)
+ac_adapter = true
 # Display power draw (Linux only)
 power_draw = false
 
@@ -214,28 +244,45 @@ pub fn load_config(cli: &Cli) -> Config {
     }
 }
 
-/// Only the [logo] table of a config file, every other table is ignored without being checked
+/// What --all keeps from a config file: the [logo] table and the [display] keys that change how
+/// lines look rather than which ones show. Every other key is ignored without being checked
 #[derive(Deserialize, Default)]
-struct LogoOnlyConfig {
+struct StyleOnlyConfig {
     #[serde(default)]
     logo: LogoConfig,
+    #[serde(default)]
+    display: DisplayStyleConfig,
 }
 
-/// Reads the [logo] settings from the config file without creating it or printing anything, which
-/// --all never did. A missing or unreadable file gives the default logo
-fn load_logo_config(cli: &Cli) -> LogoConfig {
+/// The [display] keys --all keeps, defaulted one by one like [logo]
+#[derive(Deserialize)]
+#[serde(default)]
+struct DisplayStyleConfig {
+    usage_bars: bool,
+}
+
+impl Default for DisplayStyleConfig {
+    fn default() -> Self {
+        Self { usage_bars: true }
+    }
+}
+
+/// Reads the settings --all keeps from the config file without creating it or printing anything,
+/// which --all never did. A missing or unreadable file gives the defaults
+fn load_style_config(cli: &Cli) -> StyleOnlyConfig {
     let config_path = cli.config_file.as_ref().cloned().unwrap_or_else(get_default_path);
     std::fs::read_to_string(config_path)
         .ok()
-        .and_then(|content| toml::from_str::<LogoOnlyConfig>(&content).ok())
-        .map(|config| config.logo)
+        .and_then(|content| toml::from_str::<StyleOnlyConfig>(&content).ok())
         .unwrap_or_default()
 }
 
-/// Enables every module but keeps the user's [logo] settings from the config file
+/// Enables every module but keeps the user's [logo] settings and usage bar style from the config
+/// file
 pub fn load_all_config(cli: &Cli) -> Config {
+    let style = load_style_config(cli);
     Config {
-        logo: load_logo_config(cli),
+        logo: style.logo,
         display: DisplayConfig {
             identifier: true,
             os: true,
@@ -251,11 +298,14 @@ pub fn load_all_config(cli: &Cli) -> Config {
             ram: true,
             swap: true,
             disk: true,
+            usage_bars: style.display.usage_bars,
             ipv4: true,
             ipv6: true,
             tailscale_ip: true,
-            tailscale_host: true,
+            tailscale_name: Some(true),
+            tailscale_host: None,
             battery: true,
+            ac_adapter: true,
             power_draw: true,
         },
     }

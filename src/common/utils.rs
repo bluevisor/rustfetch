@@ -8,6 +8,8 @@ use std::{
 
 const KIB_IN_MB: f64 = 1024.0;
 const KIB_IN_GB: f64 = 1024.0 * 1024.0; // We are declaring it as f64 as we'll use it as a float in this file to minimize casting
+/// Eighth blocks that end a usage bar's filled part, from 1/8 to 7/8 of a cell
+const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 /// Gets content from a single line file and trims it
 ///
@@ -156,4 +158,23 @@ pub fn format_screen(resolution: Option<(u64, u64)>, refresh_rate: Option<u64>) 
         (None, Some(rate)) => Some(format!("{}Hz", rate)),
         (None, None) => None,
     }
+}
+
+/// Draws a usage bar `width` cells wide as its (filled, empty) parts, so each can get its own
+/// color. The filled part is rounded to the nearest eighth of a cell, ending in an eighth block,
+/// and the empty part is light shade. Percentages above 100 draw a full bar
+///
+/// For example: (64, 10) returns ("██████▍", "░░░")
+pub fn render_bar(percent: u64, width: usize) -> (String, String) {
+    let percent = percent.min(100) as usize;
+    let eighths = percent.saturating_mul(width).saturating_mul(8).saturating_add(50) / 100;
+
+    let mut filled = "█".repeat(eighths / 8);
+    // a remainder of 0 means the bar ends on a whole cell
+    if let Some(&block) = (eighths % 8).checked_sub(1).and_then(|index| PARTIAL_BLOCKS.get(index)) {
+        filled.push(block);
+    }
+    let empty = "░".repeat(width.saturating_sub(filled.chars().count()));
+
+    (filled, empty)
 }

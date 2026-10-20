@@ -61,6 +61,12 @@ fn test_palette_fallback_is_ansi() {
     assert_eq!(PaletteColor::Blue.resolve(false), Color::Blue);
 }
 
+#[test]
+fn test_usage_bar_track_color() {
+    assert_eq!(track_color(true), rgb(0x4a, 0x4a, 0x4a));
+    assert_eq!(track_color(false), Color::BrightBlack);
+}
+
 // get_display_width and logo tests
 
 #[test]

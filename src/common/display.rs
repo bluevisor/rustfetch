@@ -5,23 +5,52 @@ use crate::{
     cli::Cli,
     common::{
         PaletteColor, extract_numeric_value, format_cpu_cores, format_frequency, format_screen,
-        format_screen_key, paint,
+        format_screen_key, paint, paint_track, render_bar,
     },
     config::Config,
     platform::{self, get_power_draw},
     sysinfo::*,
 };
 
+/// Cells in the RAM and disk usage bars
+const USAGE_BAR_WIDTH: usize = 10;
+
+/// Picks the color of a usage percentage (RAM, swap, disk), low is green and high is red
+fn usage_color(percentage: u64) -> PaletteColor {
+    if percentage < 40 {
+        PaletteColor::Green
+    } else if (40 .. 80).contains(&percentage) {
+        PaletteColor::Yellow
+    } else {
+        PaletteColor::Red
+    }
+}
+
 /// Colors a usage percentage (RAM, swap, disk), low is green and high is red
 fn color_percentage(percentage: u64) -> ColoredString {
-    let text = format!("{}%", percentage);
-    if percentage < 40 {
-        paint(&text, PaletteColor::Green)
-    } else if (40 .. 80).contains(&percentage) {
-        paint(&text, PaletteColor::Yellow)
-    } else {
-        paint(&text, PaletteColor::Red)
+    paint(&format!("{}%", percentage), usage_color(percentage))
+}
+
+/// Formats the usage after RAM and disk figures, "██████▍░░░ 64%" with usage_bars on and "(64%)"
+/// with it off. The filled part takes the percentage's color and the empty track is dim gray
+fn format_usage(percentage: u64, config: &Config) -> String {
+    if !config.display.usage_bars {
+        return format!("({})", color_percentage(percentage));
     }
+
+    let (filled, empty) = render_bar(percentage, USAGE_BAR_WIDTH);
+    // colored still wraps an empty string in escape codes, so a 0% or 100% bar skips that part
+    let filled = if filled.is_empty() {
+        filled
+    } else {
+        paint(&filled, usage_color(percentage)).to_string()
+    };
+    let empty = if empty.is_empty() {
+        empty
+    } else {
+        paint_track(&empty).to_string()
+    };
+    format!("{}{} {}", filled, empty, color_percentage(percentage))
 }
 
 /// Colors a charge percentage (battery), low is red and high is green
@@ -76,9 +105,10 @@ pub fn display_cpu(sys: &System, config: &Config) -> String {
     line
 }
 
-pub fn display_ram_usage(sys: &System) -> String {
+/// Formats the RAM line, e.g. "RAM: 41.41 GB / 64 GB ██████▍░░░ 64%"
+pub fn display_ram_usage(sys: &System, config: &Config) -> String {
     let (total, used, percentage) = get_ram_usage(sys);
-    format!("{} {} / {} ({})", "RAM:".bold(), used, total, color_percentage(percentage))
+    format!("{} {} / {} {}", "RAM:".bold(), used, total, format_usage(percentage, config))
 }
 
 pub fn display_swap_usage(sys: &System) -> String {
@@ -107,6 +137,14 @@ pub fn display_battery() -> Option<String> {
         None
     }
 }
+
+/// Formats the AC adapter line, e.g. "AC Adapter: 140W USB-C Power Adapter", None on battery power
+/// and on Macs without a battery
+#[cfg(target_os = "macos")]
+pub fn display_ac_adapter() -> Option<String> {
+    platform::get_ac_adapter().map(|adapter| format!("{} {}", "AC Adapter:".bold(), adapter))
+}
+
 pub fn display_power_draw() -> Option<String> {
     let power_draw = get_power_draw();
     if power_draw != 0 {
@@ -137,21 +175,23 @@ pub fn display_tailscale_ip() -> Option<String> {
     get_tailscale_ipv4().map(|address| format!("{} {}", "Tailscale IP:".bold(), address))
 }
 
-/// Formats the Tailscale host line, e.g. "Tailscale Host: laptop.tailnet.ts.net", None when
-/// Tailscale is not connected or MagicDNS doesn't answer
-pub fn display_tailscale_host() -> Option<String> {
+/// Formats the Tailscale name line, e.g. "Tailscale Name: laptop" for the MagicDNS name
+/// laptop.tailnet.ts.net, None when Tailscale is not connected or MagicDNS doesn't answer
+pub fn display_tailscale_name() -> Option<String> {
     let host = get_tailscale_host(get_tailscale_ipv4()?)?;
-    Some(format!("{} {}", "Tailscale Host:".bold(), host))
+    let name = get_tailscale_machine_name(&host)?;
+    Some(format!("{} {}", "Tailscale Name:".bold(), name))
 }
 
-pub fn display_disk_usage() -> String {
+/// Formats the disk line, e.g. "Disk (/): 900GB / 994GB █████████░ 90%"
+pub fn display_disk_usage(config: &Config) -> String {
     let (total, used, percentage) = platform::get_disk_usage();
     format!(
-        "{} {}GB / {}GB ({})",
+        "{} {}GB / {}GB {}",
         "Disk (/):".bold(), // FIXME: Shows "/" dir statically
         used,
         total,
-        color_percentage(percentage)
+        format_usage(percentage, config)
     )
 }
 

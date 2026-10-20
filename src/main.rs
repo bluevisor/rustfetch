@@ -58,14 +58,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vec![
                 config.display.cpu.then(|| common::display_cpu(&sys, &config)),
                 config.display.gpu.then(|| common::display_gpu_name(&cli)).flatten(),
-                config.display.ram.then(|| common::display_ram_usage(&sys)),
+                config.display.ram.then(|| common::display_ram_usage(&sys, &config)),
                 config.display.swap.then(|| common::display_swap_usage(&sys)),
-                config.display.disk.then(common::display_disk_usage),
+                config.display.disk.then(|| common::display_disk_usage(&config)),
                 config.display.ipv4.then(common::display_local_ipv4).flatten(),
                 config.display.ipv6.then(common::display_local_ipv6).flatten(),
                 config.display.tailscale_ip.then(common::display_tailscale_ip).flatten(),
-                config.display.tailscale_host.then(common::display_tailscale_host).flatten(),
+                config.display.show_tailscale_name().then(common::display_tailscale_name).flatten(),
                 config.display.battery.then(common::display_battery).flatten(),
+                #[cfg(target_os = "macos")]
+                config.display.ac_adapter.then(common::display_ac_adapter).flatten(),
                 #[cfg(target_os = "linux")]
                 config.display.power_draw.then(common::display_power_draw).flatten(),
             ]

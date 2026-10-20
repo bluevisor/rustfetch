@@ -31,10 +31,10 @@ tests/              # Tests for "cargo test"
 ├── <a href="#utils_testsrs">utils_tests.rs</a>  # Tests specific to utils
 ├── config_tests.rs  # Old config files still parse
 ├── logo_tests.rs    # [logo] color parsing
-├── palette_tests.rs # Palette, truecolor detection, logo shape
+├── palette_tests.rs # Palette, usage bar track color, truecolor detection, logo shape
 ├── shell_tests.rs   # Shell name/version parsing and the version cache
 ├── network_tests.rs # Interface and address selection, /proc/net parsers
-├── tailscale_tests.rs # Tailscale checks, PTR query and DNS reply parsing
+├── tailscale_tests.rs # Tailscale checks, PTR query, DNS reply parsing and machine names
 ├── macos_tests.rs   # macOS-only platform functions
 ├── linux_tests.rs   # Linux-only platform functions
 └── cache_test.rs    # GPU cache (Linux only)
@@ -51,7 +51,7 @@ Entry point for the program, **handles showing or not showing modules** based on
 
 - **Gets command line arguments** through [clap](https://docs.rs/clap/latest/clap/)
 - **Creates a System variable** used for sysinfo functions
--  If the "--all" or "-a" flag is given, **enables all modules** and only reads the `[logo]` table of the config file, without creating it (This does not skip unsupported [platform specific modules](#platform)).
+-  If the "--all" or "-a" flag is given, **enables all modules** and only reads the `[logo]` table and `usage_bars` of the config file (how lines look, not which ones show), without creating it (This does not skip unsupported [platform specific modules](#platform)).
 <br>Else, **gets config options** from [config.rs](#configrs) and shows them based on their boolean value.
 - Gets the distro id from the dedicated function inside the **platform** crate
 - Creates a **String vector** and adds the return values of the [display functions](#displayrs) to it if the config boolean for it is true and if the function returns Some(), if it returns None or the config for it is false it **just skips it**.
@@ -63,8 +63,9 @@ Main file for configuration handling, **creates and parses a config file** or en
 - Creates a **DisplayConfig** struct that includes all modules as boolean values
 - **Creates two implementations** for DisplayConfig: **Default** for initial file creation and **All** where all modules are set to true
 - **load_config()** -> returns a DisplayConfig struct from parsing the **config.toml**. If the file does not exist it will create it in the [default config directory](https://docs.rs/dirs/latest/dirs/fn.config_dir.html) and print a message.
-- **load_all_config()** -> turns every module on and keeps the `[logo]` settings, read without creating the file or printing anything.
-- Lines added after the config format was released (shell, ipv4, ipv6, tailscale_ip, tailscale_host) and the whole `[logo]` table are **defaulted**, so older config files still parse.
+- **load_all_config()** -> turns every module on and keeps the `[logo]` settings and `usage_bars`, read without creating the file or printing anything.
+- Lines added after the config format was released (shell, usage_bars, ipv4, ipv6, tailscale_ip, tailscale_name, ac_adapter) and the whole `[logo]` table are **defaulted**, so older config files still parse.
+- Renamed keys keep reading their **old name**: `tailscale_name` was `tailscale_host`, so a config that still says `tailscale_host = false` keeps the line hidden. The old key is its own `Option` field rather than a serde alias, since an alias fails with "duplicate field" (and resets every setting) on a file that has both; `show_tailscale_name()` lets the new key win.
 
 ## cli.rs
 Uses [clap](https://docs.rs/clap/latest/clap/) to **parse command line arguments** and creates a public Cli struct with all the possible flags in it. This file also decides which description every flag should have when running "rustfetch --help".
@@ -75,16 +76,16 @@ Example of a standard flag:
 ## display.rs
 Contains all functions related to showing the values returned from other files as formatted text.
 
-Also contains internal private functions such as **color_percentage()**, specific to display features.
+Also contains internal private functions such as **color_percentage()** and **format_usage()**, specific to display features. The RAM and disk lines end in a 10 cell **usage bar** (`██████▍░░░ 64%`): the bar itself is drawn by the pure `render_bar()` in [utils.rs](#utilsrs), filled with the percentage's palette color over a dim gray track. `usage_bars = false` brings back the plain `(64%)`. Without colors (`NO_COLOR`, a pipe) the bar glyphs are still printed, uncolored.
 
 ## utils.rs
-Contains **general purpose functions** shared across multiple files. These must undergo the highest level of [testing](#utils_testsrs) as they're used everywhere. 
+Contains **general purpose functions** shared across multiple files, including the pure formatting helpers of the display lines (`format_screen()`, `render_bar()`...). These must undergo the highest level of [testing](#utils_testsrs) as they're used everywhere.
 
 ## logo.rs
 Loads the ASCII logos from `ascii/`, colors them (the distro's own color, the rainbow Apple stripes or a solid `[logo]` color) and prints them next to the info lines. Widths are counted in **terminal columns** (`chars().count()`), not bytes, since block elements such as `█` are 3 bytes but one column.
 
 ## palette.rs
-The six accent colors used by the rainbow logo and the usage percentages, in **one place**: a muted 24-bit palette when `COLORTERM` is `truecolor` or `24bit` (the same rule the colored crate uses) and the plain ANSI colors everywhere else. Detection is read once per process.
+The six accent colors used by the rainbow logo and the usage percentages and bars, in **one place**: a muted 24-bit palette when `COLORTERM` is `truecolor` or `24bit` (the same rule the colored crate uses) and the plain ANSI colors everywhere else. Detection is read once per process. The empty track of the usage bars is a dim gray (`#4a4a4a`, bright black on ANSI terminals).
 
 ## cache.rs
 Caches the GPU's pretty name, which on **Linux** comes from wgpu and takes ~45ms. Compiled only on Linux: macOS reads its GPU from IOKit in well under a millisecond, so wgpu isn't even a dependency there.
@@ -101,7 +102,11 @@ Note that **every function that's called from shared code must be written in bot
 Reads `/proc`, `/sys` and `/etc/os-release`, finds the `.rodata` section of ELF binaries (where shells keep their version string), lists displays through display-info and asks `/proc/net` for the default routes and IPv6 address flags.
 
 ## macos.rs
-Talks to the system directly instead of spawning tools (`system_profiler`, `ioreg` and `ifconfig` take tens of milliseconds each): **IOKit** for the GPU and battery, **CoreGraphics** for displays (AppKit would cost ~13ms just to load), `sysctl` for CPU core types and process arguments, a **PF_ROUTE** socket for the default route, an `ioctl` for IPv6 address flags and the Mach-O `__cstring` section for shell versions.
+Talks to the system directly instead of spawning tools (`system_profiler`, `ioreg` and `ifconfig` take tens of milliseconds each): **IOKit** for the GPU, battery and power adapter, **CoreGraphics** for displays (AppKit would cost ~13ms just to load), `sysctl` for CPU core types and process arguments, a **PF_ROUTE** socket for the default route, an `ioctl` for IPv6 address flags and the Mach-O `__cstring` section for shell versions.
+
+- **Display names** come from CoreDisplay and are only read with two or more displays. CoreDisplay calls every built-in panel "Color LCD", so a built-in panel whose `CGDisplayModelNumber` is in the list of product IDs system_profiler's SPDisplaysReporter checks for `spdisplays_built-in-liquid-retina-xdr` is shown as **Liquid Retina XDR** (no IOKit or CoreDisplay property names the panel type). A panel newer than that list, and not on its plain Liquid Retina (MacBook Air) list, still counts when it runs at ProMotion's 120 Hz, read from the current mode since listing every mode costs ~3.5ms.
+- The **AppleSmartBattery** service is looked up once and shared by the Battery and AC Adapter lines. The adapter comes from its `AdapterDetails` (`Watts`, `Name`) and is hidden when `ExternalConnected` is false or no wattage is reported.
+- **GPUs** are read from the IORegistry. Only integrated GPUs go untagged, discrete ones keep `[Discrete]` so dual-GPU Intel Macs can tell them apart.
 
 ## shared.rs
 Contains all functions which run **regardless of OS**, the [sysinfo crate](https://docs.rs/sysinfo/latest/sysinfo/) is most used here.
@@ -117,7 +122,7 @@ Finds the shell rustfetch was started from by walking up the parent processes (f
 Reads every interface address once with `getifaddrs` and picks what the Local IPv4, Local IPv6 and Tailscale IP lines show: the interface carrying the default route, falling back to the first physical one when the route goes through a tunnel without a usable address (a Tailscale exit node). The selection functions are pure so they can be [tested](#tests) on every OS, the same goes for the Linux `/proc/net` parsers kept here.
 
 ## tailscale.rs
-Tells Tailscale's tunnel apart from other VPNs (on macOS every VPN is a `utun`, so it also needs Tailscale's fixed `fd7a:115c:a1e0::/48` address) and gets the MagicDNS name with one hand-built PTR query to `100.100.100.100`, which takes ~0.5ms where `tailscale status` takes ~30ms.
+Tells Tailscale's tunnel apart from other VPNs (on macOS every VPN is a `utun`, so it also needs Tailscale's fixed `fd7a:115c:a1e0::/48` address) and gets the MagicDNS name with one hand-built PTR query to `100.100.100.100`, which takes ~0.5ms where `tailscale status` takes ~30ms. The Tailscale Name line shows only the **machine name**, the first label of that MagicDNS name (`laptop` for `laptop.tailnet.ts.net`).
 
 ## utils_tests.rs
 <a id="tests"></a>Testing file for utils functions, the other test files follow the same rules. Files named after an OS only build on that OS, everything else is pure and runs everywhere. The testing requirements are usually:

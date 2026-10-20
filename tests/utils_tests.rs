@@ -183,3 +183,46 @@ fn test_format_screen_partial() {
 fn test_format_screen_nothing_to_show() {
     assert_eq!(format_screen(None, None), None);
 }
+
+// render_bar tests
+
+#[test]
+fn test_render_bar_empty_and_full() {
+    assert_eq!(render_bar(0, 10), (String::new(), "░".repeat(10)));
+    assert_eq!(render_bar(100, 10), ("█".repeat(10), String::new()));
+}
+
+#[test]
+fn test_render_bar_partial_cells() {
+    // This test is crucial since its validity is in the doc comments for the function in utils.rs
+    assert_eq!(render_bar(64, 10), (String::from("██████▍"), String::from("░░░")));
+    assert_eq!(render_bar(90, 10), (String::from("█████████"), String::from("░")));
+    assert_eq!(render_bar(50, 10), (String::from("█████"), String::from("░░░░░")));
+    // a quarter of a cell
+    assert_eq!(render_bar(2, 10), (String::from("▎"), "░".repeat(9)));
+}
+
+#[test]
+fn test_render_bar_rounds_to_the_nearest_eighth() {
+    // 5% of 80 eighths is exactly 4, 6% is 4.8 and 1% is 0.8, both round up
+    assert_eq!(render_bar(5, 10).0, "▌");
+    assert_eq!(render_bar(6, 10).0, "▋");
+    assert_eq!(render_bar(1, 10).0, "▏");
+    // 99% is 79.2 eighths, it rounds down so an almost full bar doesn't look full
+    assert_eq!(render_bar(99, 10), (format!("{}▉", "█".repeat(9)), String::new()));
+}
+
+#[test]
+fn test_render_bar_clamps_above_100() {
+    assert_eq!(render_bar(150, 10), render_bar(100, 10));
+    assert_eq!(render_bar(u64::MAX, 10), render_bar(100, 10));
+}
+
+#[test]
+fn test_render_bar_keeps_its_width() {
+    for percent in 0 ..= 100 {
+        let (filled, empty) = render_bar(percent, 10);
+        assert_eq!(filled.chars().count() + empty.chars().count(), 10, "{}%", percent);
+    }
+    assert_eq!(render_bar(64, 0), (String::new(), String::new()));
+}

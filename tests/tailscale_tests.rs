@@ -254,3 +254,31 @@ fn test_read_dns_name_too_long() {
     let name = [label.as_str(); 3].join(".");
     assert_eq!(read_dns_name(&encode_name(&name), 0).map(|(name, _)| name.len()), Some(191));
 }
+
+// get_tailscale_machine_name tests
+
+#[test]
+fn test_tailscale_machine_name_from_fqdn() {
+    assert_eq!(
+        get_tailscale_machine_name("johns-m5-macbook-pro.heron-minor.ts.net"),
+        Some("johns-m5-macbook-pro")
+    );
+}
+
+#[test]
+fn test_tailscale_machine_name_trailing_dot() {
+    assert_eq!(get_tailscale_machine_name("laptop.tailnet.ts.net."), Some("laptop"));
+    assert_eq!(get_tailscale_machine_name("laptop."), Some("laptop"));
+}
+
+#[test]
+fn test_tailscale_machine_name_single_label() {
+    assert_eq!(get_tailscale_machine_name("laptop"), Some("laptop"));
+}
+
+#[test]
+fn test_tailscale_machine_name_empty() {
+    assert_eq!(get_tailscale_machine_name(""), None);
+    assert_eq!(get_tailscale_machine_name("."), None);
+    assert_eq!(get_tailscale_machine_name(".tailnet.ts.net"), None);
+}

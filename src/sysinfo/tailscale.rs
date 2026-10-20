@@ -75,6 +75,14 @@ pub fn get_tailscale_host(address: Ipv4Addr) -> Option<String> {
     parse_ptr_response(buffer.get(.. length)?, id)
 }
 
+/// Gets the machine name out of a MagicDNS name, its first label: "laptop.tailnet.ts.net" gives
+/// "laptop". A trailing dot is ignored, None when there is no name
+pub fn get_tailscale_machine_name(dns_name: &str) -> Option<&str> {
+    let dns_name = dns_name.strip_suffix('.').unwrap_or(dns_name);
+    let name = dns_name.split_once('.').map_or(dns_name, |(name, _)| name);
+    (!name.is_empty()).then_some(name)
+}
+
 /// Picks a DNS query ID from the pid and the clock, so a late reply to an earlier run is ignored
 fn get_query_id() -> u16 {
     let nanos = SystemTime::now()

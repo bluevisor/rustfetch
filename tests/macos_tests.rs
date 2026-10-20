@@ -177,8 +177,9 @@ fn test_gpu_frequency_invalid_tables() {
 
 #[test]
 fn test_gpu_type_from_vendor() {
-    assert_eq!(get_gpu_type(0x106b), Some("Integrated")); // Apple
-    assert_eq!(get_gpu_type(0x8086), Some("Integrated")); // Intel
+    // Integrated GPUs are not tagged, only discrete ones
+    assert_eq!(get_gpu_type(0x106b), None); // Apple
+    assert_eq!(get_gpu_type(0x8086), None); // Intel
     assert_eq!(get_gpu_type(0x1002), Some("Discrete")); // AMD
     assert_eq!(get_gpu_type(0x10de), Some("Discrete")); // NVIDIA
     assert_eq!(get_gpu_type(0x1af4), None); // virtio
@@ -187,8 +188,8 @@ fn test_gpu_type_from_vendor() {
 #[test]
 fn test_format_gpu() {
     assert_eq!(
-        format_gpu("Apple M5 Pro", Some(20), Some(1620), Some("Integrated")),
-        "Apple M5 Pro (20 cores) @ 1.62 GHz [Integrated]"
+        format_gpu("Apple M5 Pro", Some(20), Some(1620), get_gpu_type(0x106b)),
+        "Apple M5 Pro (20 cores) @ 1.62 GHz"
     );
     assert_eq!(
         format_gpu("AMD Radeon Pro 5500M", None, None, Some("Discrete")),
@@ -240,6 +241,58 @@ fn test_battery_status() {
     assert_eq!(battery_status(false, true, false), "AC Connected");
 }
 
+// AC adapter tests
+
+#[test]
+fn test_format_ac_adapter_name_with_wattage() {
+    // AdapterDetails of Apple's 140W adapter, its name already starts with the wattage
+    assert_eq!(
+        format_ac_adapter(140, Some("140W USB-C Power Adapter")),
+        Some(String::from("140W USB-C Power Adapter"))
+    );
+}
+
+#[test]
+fn test_format_ac_adapter_other_names() {
+    assert_eq!(
+        format_ac_adapter(96, Some("pd charger")),
+        Some(String::from("96W (pd charger)"))
+    );
+    // 14W is not the start of 140W
+    assert_eq!(
+        format_ac_adapter(14, Some("140W USB-C Power Adapter")),
+        Some(String::from("14W (140W USB-C Power Adapter)"))
+    );
+    assert_eq!(format_ac_adapter(60, None), Some(String::from("60W")));
+    assert_eq!(format_ac_adapter(60, Some("  ")), Some(String::from("60W")));
+}
+
+#[test]
+fn test_format_ac_adapter_strips_control_characters() {
+    // the name comes from the adapter, an escape sequence in it must not reach the terminal
+    assert_eq!(
+        format_ac_adapter(30, Some("\u{1b}[31mEvil\u{7}")),
+        Some(String::from("30W ([31mEvil)"))
+    );
+}
+
+#[test]
+fn test_format_ac_adapter_no_wattage() {
+    assert_eq!(format_ac_adapter(0, Some("140W USB-C Power Adapter")), None);
+    assert_eq!(format_ac_adapter(-1, None), None);
+}
+
+#[test]
+fn test_get_ac_adapter_shape() {
+    // Depends on the machine: desktops and unplugged laptops have no adapter line
+    if let Some(adapter) = get_ac_adapter() {
+        assert!(adapter.chars().next().is_some_and(|c| c.is_ascii_digit()), "{}", adapter);
+        assert!(adapter.contains('W'), "{}", adapter);
+        // the line needs a battery to exist
+        assert_ne!(get_battery().0, "Unavailable");
+    }
+}
+
 #[test]
 fn test_get_battery_shape() {
     let (capacity, status) = get_battery();
@@ -276,6 +329,35 @@ fn test_filesystem_space_of_root() {
     assert!(total > 0 && available <= total);
     let missing: &CStr = c"/no/such/directory/for/rustfetch";
     assert_eq!(get_filesystem_space(missing), None);
+}
+
+#[test]
+fn test_liquid_retina_xdr_known_panels() {
+    // CGDisplayModelNumber of the 16" M5 Pro MacBook Pro's panel, also at a fixed 60 Hz
+    assert!(is_liquid_retina_xdr(0xa05f, Some(120)));
+    assert!(is_liquid_retina_xdr(0xa05f, Some(60)));
+    // first and last of system_profiler's list
+    assert!(is_liquid_retina_xdr(0xa04e, None));
+    assert!(is_liquid_retina_xdr(0xa061, None));
+}
+
+#[test]
+fn test_liquid_retina_xdr_unknown_panel_with_promotion() {
+    // a newer panel than the list knows still counts when it runs at 120 Hz
+    assert!(is_liquid_retina_xdr(0xa070, Some(120)));
+    assert!(!is_liquid_retina_xdr(0xa070, Some(60)));
+    assert!(!is_liquid_retina_xdr(0xa070, None));
+}
+
+#[test]
+fn test_liquid_retina_is_not_xdr() {
+    // MacBook Air panels (system_profiler's plain Liquid Retina list) run at 60 Hz
+    assert!(!is_liquid_retina_xdr(0xa052, Some(60)));
+    assert!(!is_liquid_retina_xdr(0xa067, Some(60)));
+    assert!(!is_liquid_retina_xdr(0, Some(60)));
+    // and stay plain Liquid Retina even if one ever gets ProMotion
+    assert!(!is_liquid_retina_xdr(0xa062, Some(120)));
+    assert!(!is_liquid_retina_xdr(0xa052, Some(120)));
 }
 
 #[test]
