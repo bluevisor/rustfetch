@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File},
     os::unix::fs::FileExt,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -225,4 +225,23 @@ pub fn write_cache_file<T: Serialize>(path: &Path, cache: &T) {
     {
         let _ = fs::remove_file(&temporary);
     }
+}
+
+/// Gets the directory rustfetch's config folder goes in: dirs::config_dir, except on Haiku whose
+/// own place is ~/config/settings (dirs only knows XDG_CONFIG_HOME, which some terminals set there
+/// and others don't, so one user would end up with two configs)
+pub fn config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "haiku")]
+    return dirs::home_dir().map(|home| home.join("config/settings"));
+    #[cfg(not(target_os = "haiku"))]
+    dirs::config_dir()
+}
+
+/// Gets the directory rustfetch's cache folder goes in: dirs::cache_dir, ~/config/cache on Haiku
+/// (see config_dir)
+pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "haiku")]
+    return dirs::home_dir().map(|home| home.join("config/cache"));
+    #[cfg(not(target_os = "haiku"))]
+    dirs::cache_dir()
 }

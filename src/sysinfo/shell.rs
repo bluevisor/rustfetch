@@ -12,7 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::{read_cache_file, read_file_at, write_cache_file},
+    common::{cache_dir, read_cache_file, read_file_at, write_cache_file},
     platform,
 };
 
@@ -423,9 +423,10 @@ fn get_executable_stamp(exe_path: &str) -> Option<(u64, u64)> {
 }
 
 /// Gets where the shell version cache lives (~/.cache/rustfetch/shell.toml on Linux,
-/// ~/Library/Caches/rustfetch/shell.toml on macOS), None when there is no cache directory
+/// ~/Library/Caches/rustfetch/shell.toml on macOS, ~/config/cache/rustfetch/shell.toml on Haiku),
+/// None when there is no cache directory
 fn get_shell_cache_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|path| path.join("rustfetch/shell.toml"))
+    cache_dir().map(|path| path.join("rustfetch/shell.toml"))
 }
 
 /// Deletes the shell version cache, for --clear-cache

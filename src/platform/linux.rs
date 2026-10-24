@@ -12,7 +12,6 @@ use crate::{
 const BATTERY_CAPACITY_DIR: &str = "/sys/class/power_supply/BAT0/capacity";
 const BATTERY_STATUS_DIR: &str = "/sys/class/power_supply/BAT0/status";
 const BATTERY_POWER_DRAW_DIR: &str = "/sys/class/power_supply/BAT0/power_now";
-const ROOT_DIR: &str = "/";
 const ROUTE_IPV4_DIR: &str = "/proc/net/route";
 const ROUTE_IPV6_DIR: &str = "/proc/net/ipv6_route";
 const IF_INET6_DIR: &str = "/proc/net/if_inet6";
@@ -53,9 +52,11 @@ pub fn get_power_draw() -> u32 {
     }
 }
 
+/// The directory whose filesystem the Disk line shows
+pub const DISK_DIR: &str = "/";
+
 pub fn get_disk_usage() -> (u64, u64, u64) {
-    // Linux root directory
-    get_directory_usage(ROOT_DIR)
+    get_directory_usage(DISK_DIR)
 }
 
 /// Gets the (total, available) bytes of the filesystem holding `path` with one statvfs(3) call,
@@ -239,58 +240,6 @@ pub fn get_process_argv0(pid: u32) -> Option<String> {
 /// Linux the ELF .rodata section. For bash that is ~100KB instead of the whole ~900KB file
 pub fn find_string_section(read_at: impl Fn(u64, usize) -> Option<Vec<u8>>) -> Option<(u64, u64)> {
     find_elf_rodata_section(read_at)
-}
-
-/// Finds the .rodata section of a little endian ELF binary (32 or 64-bit) as (file offset, size),
-/// reading the file through read_at(offset, length)
-pub fn find_elf_rodata_section(
-    read_at: impl Fn(u64, usize) -> Option<Vec<u8>>,
-) -> Option<(u64, u64)> {
-    let header = read_at(0, 64)?;
-    // Every architecture rustfetch runs on is little endian (EI_DATA = 1)
-    if header.get(.. 4)? != b"\x7fELF" || *header.get(5)? != 1 {
-        return None;
-    }
-    let is_64 = match *header.get(4)? {
-        1 => false,
-        2 => true,
-        _ => return None,
-    };
-
-    let read_u16 = |data: &[u8], offset| read_array(data, offset).map(u16::from_le_bytes);
-    let read_u32 = |data: &[u8], offset| read_array(data, offset).map(u32::from_le_bytes);
-    let read_u64 = |data: &[u8], offset| read_array(data, offset).map(u64::from_le_bytes);
-
-    // e_shoff, e_shentsize, e_shnum and e_shstrndx sit at different offsets in ELF32 and ELF64
-    let (table_offset, fields) = if is_64 {
-        (read_u64(&header, 0x28)?, 0x3a)
-    } else {
-        (u64::from(read_u32(&header, 0x20)?), 0x2e)
-    };
-    let entry_size = usize::from(read_u16(&header, fields)?);
-    let entry_count = usize::from(read_u16(&header, fields + 2)?);
-    let names_index = usize::from(read_u16(&header, fields + 4)?);
-    let table = read_at(table_offset, entry_size.checked_mul(entry_count)?)?;
-
-    // Gets a section header's (name offset, file offset, size)
-    let section = |index: usize| -> Option<(usize, u64, u64)> {
-        let start = index.checked_mul(entry_size)?;
-        let name = usize::try_from(read_u32(&table, start)?).ok()?;
-        if is_64 {
-            Some((name, read_u64(&table, start + 24)?, read_u64(&table, start + 32)?))
-        } else {
-            let offset = u64::from(read_u32(&table, start + 16)?);
-            Some((name, offset, u64::from(read_u32(&table, start + 20)?)))
-        }
-    };
-
-    let (_, names_offset, names_size) = section(names_index)?;
-    let names = read_at(names_offset, usize::try_from(names_size).ok()?)?;
-
-    (0 .. entry_count)
-        .filter_map(section)
-        .find(|&(name, _, _)| names.get(name ..).is_some_and(|n| n.starts_with(b".rodata\0")))
-        .map(|(_, offset, size)| (offset, size))
 }
 
 /// Linux has no cheap per-core-type count, so the CPU line falls back to the physical core count

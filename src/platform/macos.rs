@@ -67,9 +67,11 @@ pub fn get_power_draw() -> i32 {
     0
 }
 
+/// The directory whose filesystem the Disk line shows
+pub const DISK_DIR: &str = "/";
+
 pub fn get_disk_usage() -> (u64, u64, u64) {
-    // MacOS root directory
-    get_directory_usage("/")
+    get_directory_usage(DISK_DIR)
 }
 
 /// Gets the (total, available) bytes of the filesystem holding `path` with one statfs(2) call,

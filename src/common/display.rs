@@ -224,7 +224,7 @@ pub fn display_disk_usage(config: &Config) -> String {
     let (total, used, percentage) = platform::get_disk_usage();
     format!(
         "{} {}GB / {}GB {}",
-        format_key("Disk (/)"), // FIXME: Shows "/" dir statically
+        format_key(&format!("Disk ({})", platform::DISK_DIR)),
         used,
         total,
         format_usage(percentage, config)

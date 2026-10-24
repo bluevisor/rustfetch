@@ -32,8 +32,9 @@ pub fn create_system(config: &Config) -> System {
 /// Gets RAM usage values and returns them as a formatted String alongside the usage percentage as
 /// unsigned int. Returns 0 on all values in case any error occurs
 pub fn get_ram_usage(sys: &System) -> (String, String, u64) {
-    let total_kib = (sys.total_memory() / KIB_TO_MB) as f64;
-    let used_kib = (sys.used_memory() / KIB_TO_MB) as f64;
+    let (total, used, _, _) = get_memory(sys);
+    let total_kib = (total / KIB_TO_MB) as f64;
+    let used_kib = (used / KIB_TO_MB) as f64;
     let percentage = get_percentage_from_part(used_kib, total_kib).unwrap_or(0);
 
     (
@@ -46,8 +47,9 @@ pub fn get_ram_usage(sys: &System) -> (String, String, u64) {
 /// Gets swap usage values and returns them as a formatted String alongside the usage percentage as
 /// unsigned int. Returns 0 on all values in case any error occurs
 pub fn get_swap_usage(sys: &System) -> (String, String, u64) {
-    let total_kib = (sys.total_swap() / KIB_TO_MB) as f64;
-    let used_kib = (sys.used_swap() / KIB_TO_MB) as f64;
+    let (_, _, total, used) = get_memory(sys);
+    let total_kib = (total / KIB_TO_MB) as f64;
+    let used_kib = (used / KIB_TO_MB) as f64;
     let percentage = get_percentage_from_part(used_kib, total_kib).unwrap_or(0);
 
     (
@@ -57,9 +59,24 @@ pub fn get_swap_usage(sys: &System) -> (String, String, u64) {
     )
 }
 
+/// Gets memory as (total RAM, used RAM, total swap, used swap) in bytes
+#[cfg(not(target_os = "haiku"))]
+fn get_memory(sys: &System) -> (u64, u64, u64, u64) {
+    (sys.total_memory(), sys.used_memory(), sys.total_swap(), sys.used_swap())
+}
+
+// sysinfo has no Haiku backend (every value is 0 or empty), so Haiku reads its own
+#[cfg(target_os = "haiku")]
+fn get_memory(_sys: &System) -> (u64, u64, u64, u64) {
+    platform::read_memory()
+}
+
 /// Gets system uptime in HHh MMm SSs format
 pub fn get_uptime() -> String {
+    #[cfg(not(target_os = "haiku"))]
     let uptime_seconds = System::uptime();
+    #[cfg(target_os = "haiku")]
+    let uptime_seconds = platform::get_uptime_seconds();
 
     let hours = uptime_seconds / SECONDS_TO_HOURS;
     let minutes = (uptime_seconds % SECONDS_TO_HOURS) / MINUTES_TO_HOURS;
@@ -96,8 +113,15 @@ pub fn get_os_name() -> String {
 }
 
 /// Gets the OS version on any given system, on macOS this is the product version (e.g. 26.7.1)
+#[cfg(not(target_os = "haiku"))]
 pub fn get_os_version() -> Option<String> {
     System::os_version()
+}
+
+/// Gets the OS version, on Haiku the hrev it was built from (e.g. hrev60290)
+#[cfg(target_os = "haiku")]
+pub fn get_os_version() -> Option<String> {
+    platform::get_hrev()
 }
 
 /// Gets kernel version on any given system
@@ -107,6 +131,11 @@ pub fn get_kernel_version() -> String {
 
 /// Gets cpu name on any given system, filters out any comments such as x-core processor
 pub fn get_cpu_name(sys: &System) -> String {
+    #[cfg(target_os = "haiku")]
+    if let Some(name) = platform::read_cpu_name() {
+        return name;
+    }
+
     sys.cpus()
         .first()
         .map(|cpu| {
@@ -137,6 +166,13 @@ pub fn get_cpu_name(sys: &System) -> String {
 
 /// Gets CPU frequency in MHz
 pub fn get_cpu_frequency(sys: &System) -> u64 {
+    #[cfg(target_os = "haiku")]
+    return {
+        let _ = sys;
+        platform::read_cpu_frequency()
+    };
+
+    #[cfg(not(target_os = "haiku"))]
     sys.cpus().first().map(|cpu| cpu.frequency()).unwrap_or_else(|| 0)
 }
 
@@ -195,8 +231,14 @@ pub fn get_screens() -> Vec<ScreenInfo> {
     screens
 }
 
+#[cfg(not(target_os = "haiku"))]
 pub fn get_host_name() -> Option<String> {
     System::host_name()
+}
+
+#[cfg(target_os = "haiku")]
+pub fn get_host_name() -> Option<String> {
+    platform::read_host_name()
 }
 
 pub fn get_username() -> String {

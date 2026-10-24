@@ -174,6 +174,12 @@ pub(crate) fn get_interface_addresses() -> &'static [InterfaceAddress] {
     ADDRESSES.get_or_init(read_interface_addresses)
 }
 
+// Haiku has no IFF_RUNNING, IFF_LINK ("has link") is its equivalent
+#[cfg(not(target_os = "haiku"))]
+const IFF_RUNNING: libc::c_int = libc::IFF_RUNNING;
+#[cfg(target_os = "haiku")]
+const IFF_RUNNING: libc::c_int = 0x1000;
+
 /// Lists the IPv4 and IPv6 addresses of every interface that is up and running, loopback
 /// excluded, in the order the kernel reports them
 fn read_interface_addresses() -> Vec<InterfaceAddress> {
@@ -183,7 +189,7 @@ fn read_interface_addresses() -> Vec<InterfaceAddress> {
         return Vec::new();
     }
 
-    let wanted_flags = (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_uint;
+    let wanted_flags = (libc::IFF_UP | IFF_RUNNING) as libc::c_uint;
     let mut addresses = Vec::new();
     let mut current = list;
     while !current.is_null() {
@@ -249,11 +255,11 @@ fn get_netmask_prefix_len(netmask: *const libc::sockaddr, family: libc::c_int) -
         (offset_of!(libc::sockaddr_in6, sin6_addr), 16)
     };
 
-    // SAFETY: netmask is non-null, sa_len is the first byte of every BSD sockaddr
-    #[cfg(target_os = "macos")]
+    // SAFETY: netmask is non-null, sa_len is the first byte of every BSD (and Haiku) sockaddr
+    #[cfg(any(target_os = "macos", target_os = "haiku"))]
     let available = usize::from(unsafe { (*netmask).sa_len });
     // Linux has no sa_len, its netmasks are always the full sockaddr of the address family
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "haiku")))]
     let available = start + len;
 
     let end = (start + len).min(available);

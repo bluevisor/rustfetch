@@ -40,11 +40,15 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 objc2-io-kit = { version = "0.3.2", default-features = false, features = ["std", "libc"] }
 
 # macOS reads displays straight from CoreGraphics, display-info would pull in AppKit (~13 ms), and
-# its GPU comes from IOKit so wgpu (Linux's cached fallback for the GPU name) isn't needed either
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+# its GPU comes from IOKit so wgpu (Linux's cached fallback for the GPU name) isn't needed either.
+# Haiku has neither X11/Wayland nor wgpu support, it asks app_server through build.rs' C++ shim
+[target.'cfg(not(any(target_os = "macos", target_os = "haiku")))'.dependencies]
 display-info = "0.5.7"
 pollster = "0.4.0"
 wgpu = "28.0.0"
+
+[build-dependencies]
+cc = "1.2.55"
 
 [lints.clippy]
 unwrap_used = "deny"

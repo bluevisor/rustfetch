@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{InterfaceAddress, get_interface_addresses, is_virtual_interface};
 use crate::{
-    common::{read_cache_file, write_cache_file},
+    common::{cache_dir, read_cache_file, write_cache_file},
     platform,
 };
 
@@ -193,7 +193,7 @@ impl WifiSsidCache {
 /// Gets where the Wi-Fi name cache lives (~/Library/Caches/rustfetch/wifi.toml on macOS), None
 /// when there is no cache directory
 fn get_wifi_cache_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|path| path.join("rustfetch/wifi.toml"))
+    cache_dir().map(|path| path.join("rustfetch/wifi.toml"))
 }
 
 /// Gets the current time in seconds since the Unix epoch, 0 if the clock is before it

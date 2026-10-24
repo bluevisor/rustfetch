@@ -239,9 +239,9 @@ color = "default"
 }
 
 /// Gets the default config path for rustfetch. The default path is ~/.config/rustfetch/config.toml
-/// or ./rustfetch.toml as fallback
+/// (~/config/settings/rustfetch/config.toml on Haiku) or ./rustfetch.toml as fallback
 pub fn get_default_path() -> PathBuf {
-    dirs::config_dir()
+    crate::common::config_dir()
         .map(|p| p.join("rustfetch/config.toml"))
         .unwrap_or_else(|| PathBuf::from("rustfetch.toml")) // fallback = current directory
 }
