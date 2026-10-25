@@ -77,45 +77,31 @@ pub fn colorize_logo_line(distro_id: &str, line: &str) -> ColoredString {
     line.color(distro_logo_color(distro_id))
 }
 
-/// Draws a line of the Haiku icon (ascii/haiku.txt), a map with one letter per cell: W the
-/// pillars' white front, S their grey side, T their top, L the leaf and D its midrib and stem. A
-/// solid [logo] color paints every cell in it, without colors the cells fall back to shade glyphs
-fn render_haiku_logo_line(line: &str, logo_color: LogoColor) -> String {
+const HAIKU_LOGO_COLORS: &str = include_str!("../../ascii/haiku-colors.txt");
+
+/// Colors a line of the Haiku logo (ascii/haiku.txt) from the same line of its color map
+/// (ascii/haiku-colors.txt), one letter per character: W the pillars' white, G their grey edge, L
+/// the leaf and D its dim edge. A solid [logo] color paints every character in it
+fn render_haiku_logo_line(line: &str, colors: &str, logo_color: LogoColor) -> String {
     let truecolor = supports_truecolor();
     let rgb = |r, g, b, ansi| if truecolor { Color::TrueColor { r, g, b } } else { ansi };
-    let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
 
     line.chars()
-        .map(|cell| {
-            let (color, glyph) = match cell {
-                'W' => (rgb(236, 236, 236, Color::BrightWhite), '█'),
-                'S' => (rgb(150, 150, 150, Color::White), '▓'),
-                'T' => (rgb(196, 196, 196, Color::White), '▒'),
-                'L' => (rgb(98, 189, 36, Color::BrightGreen), '█'),
-                'D' => (rgb(44, 120, 22, Color::Green), '▓'),
-                _ => return cell.to_string(),
+        .zip(colors.chars().chain(std::iter::repeat(' ')))
+        .map(|(glyph, cell)| {
+            let color = match cell {
+                'W' => rgb(236, 236, 236, Color::BrightWhite),
+                'G' => rgb(150, 150, 150, Color::White),
+                'L' => rgb(98, 189, 36, Color::BrightGreen),
+                'D' => rgb(44, 120, 22, Color::Green),
+                _ => return glyph.to_string(),
             };
-            if !colorize {
-                return glyph.to_string();
-            }
             match logo_color {
-                LogoColor::Solid(solid) => paint_cell(solid),
-                _ => paint_cell(color),
+                LogoColor::Solid(solid) => glyph.to_string().color(solid).to_string(),
+                _ => glyph.to_string().color(color).to_string(),
             }
         })
         .collect()
-}
-
-/// Haiku's Terminal draws █ wider than a cell, smearing it into the next one, so there a cell is a
-/// space painted in the background color
-#[cfg(target_os = "haiku")]
-fn paint_cell(color: Color) -> String {
-    " ".on_color(color).to_string()
-}
-
-#[cfg(not(target_os = "haiku"))]
-fn paint_cell(color: Color) -> String {
-    "█".color(color).to_string()
 }
 
 /// The classic rainbow Apple stripes over the 19 line macOS logo. Green covers the leaf and the
@@ -246,7 +232,8 @@ pub fn print_logo(
             if i < logo_lines.len() {
                 let colored_line = match logo_color {
                     _ if distro_id == "haiku" => {
-                        render_haiku_logo_line(&logo_lines[i], logo_color)
+                        let colors = HAIKU_LOGO_COLORS.lines().nth(i).unwrap_or("");
+                        render_haiku_logo_line(&logo_lines[i], colors, logo_color)
                     },
                     LogoColor::Solid(color) => logo_lines[i].color(color).to_string(),
                     LogoColor::Rainbow if distro_id == "macos" => {

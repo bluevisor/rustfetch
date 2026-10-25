@@ -1,17 +1,12 @@
-        TTTTTTT
-        WWWWWWSS
-        WWWWWWSS      TTTTTTT
-        WWWWWWSS      WWWWWWSS
-        WWWWWWSS      WWWWWWSS
-        WWWWWWSS      WWWWWWSS
-DD      WWWWWWLLLLLLLLLLLLLLSS
-  DD   LLLLLLLLLLLLLLLLLLLLLLLLLLL
-   DDDDLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-     LLLDDDDDDDDDDDDDDDDDDDDDDDDDDDDLLL
-        LLLLLLLLLLLLLLLLLLLLLLLLLLL
-        WWWWWLLLLLLLLLLLLLLWSS
-        WWWWWWSS      WWWWWWSS
-        WWWWWWSS      WWWWWWSS
-                      WWWWWWSS
-                      WWWWWWSS
-                      WWWWWWSS
+       xMM         dMM
+       xMM         xMM
+       xMM         xMW:.
+       xMM     .,;:kxxxxo
+       xMM  .,:lxxx'xxxx;
+,-     xMM .cdxxxdddddddd:
+xo:'.  xNX0x:xdddddddd
+ ;xdlc::ckxxddoolllxON
+       :ddoolcc::c:xNM
+       dKolc:;;,;:,dMM
+       xMK  ...    xMM
+       xMM         xMM
